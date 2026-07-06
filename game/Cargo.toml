@@ -1,0 +1,20 @@
+[package]
+name = "heat_game"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+authors = { workspace = true }
+description = "Heat City — game binary"
+
+[[bin]]
+name = "heat_city"
+path = "src/main.rs"
+
+[dependencies]
+heat_core = { path = "../engine" }
+hecs = "0.10"
+glam = "0.30"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ron = "0.8"
+serde = { version = "1", features = ["derive"] }

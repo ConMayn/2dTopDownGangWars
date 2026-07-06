@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["engine", "game"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "Proprietary"
+authors = ["CSL Games Studio"]
+description = "Heat City — top-down 2D crime sandbox"
+repository = "https://github.com/ConMayn/2dTopDownGangWars"
+keywords = ["game", "sandbox", "top-down", "crime", "rust"]
+categories = ["games"]
+
+[profile.dev]
+opt-level = 1           # Let dev builds run faster
+debug = true
+incremental = true
+
+[profile.release]
+opt-level = 3
+debug = false
+incremental = false
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

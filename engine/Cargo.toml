@@ -1,0 +1,21 @@
+[package]
+name = "heat_core"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+authors = { workspace = true }
+description = "Custom 2D game engine for Heat City"
+
+[dependencies]
+wgpu = "24"
+winit = { version = "0.30", features = ["rwh_06"] }
+hecs = "0.10"
+pollster = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+bytemuck = { version = "1.23", features = ["derive"] }
+glam = "0.30"
+image = { version = "0.25", default-features = false, features = ["png"] }
+ron = "0.8"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"

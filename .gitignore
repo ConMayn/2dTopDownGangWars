@@ -1,0 +1,45 @@
+# Rust
+/target/
+**/target/
+**/*.rs.bk
+Cargo.lock
+# Note: for binary crates, commit Cargo.lock. We'll add it later when stable.
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.exe
+*.pdb
+*.dll
+*.lib
+
+# Logs
+logs/
+*.log
+
+# Save files (never commit saves)
+*.sav
+saves/
+
+# OS
+desktop.ini
+
+# Temporary / scratch
+tmp/
+*.tmp
+
+# Asset source files (keep final assets, ignore source PSD/Aseprite etc.)
+assets/source/
+*.psd
+*.aseprite
+*.ase
+
+# Modding (user-created)
+mods/
