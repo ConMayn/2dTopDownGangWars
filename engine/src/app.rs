@@ -1,13 +1,10 @@
 //! App — hoved-loop og lifecycle for Heat City engine.
 //!
-//! Fase 0 proof: åbner et vindue, clearer skærmen, kører indtil Escape/Close.
-//! Fase 1+: udvides med ECS, input, assets, fixed timestep, plugins.
-//!
-//! Bruger winit 0.30's ApplicationHandler-model: EventLoop::run driver main loop,
-//! og events dispatches til AppState.
+//! Fase 1: Plugin-baseret arkitektur. App ejer World, Renderer, Input, Time,
+//! Assets. Plugins (registreret af game crate) opdaterer sim og renderer.
+//! Main loop kører fixed timestep simulering med interpoleret rendering.
 
 use std::sync::Arc;
-use std::time::Instant;
 
 use thiserror::Error;
 use winit::{
@@ -18,14 +15,18 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use crate::render::Renderer;
+use crate::assets::AssetStore;
+use crate::debug::{DebugOverlay, FpsCounter};
+use crate::ecs::World;
+use crate::input::{Action, InputMap, InputState};
+use crate::render::{Camera, Renderer, SpriteBatch};
+use crate::time::Time;
 
 /// Konfiguration for App-oprettelse.
 pub struct AppConfig {
     pub window_title: String,
     pub window_width: u32,
     pub window_height: u32,
-    pub clear_color: [f64; 4],
 }
 
 impl Default for AppConfig {
@@ -34,12 +35,10 @@ impl Default for AppConfig {
             window_title: "Heat City".to_string(),
             window_width: 1280,
             window_height: 720,
-            clear_color: [0.1, 0.2, 0.4, 1.0], // mørk blå
         }
     }
 }
 
-/// App-fejl.
 #[derive(Debug, Error)]
 pub enum AppError {
     #[error("window error: {0}")]
@@ -52,19 +51,93 @@ pub enum AppError {
     EventLoop(String),
 }
 
-/// Hoved-App. Entry point — opret med `App::new`, kør med `app.run()`.
+/// Plugin — implementeres af game crate for at tilføje gameplay-systemer.
+pub trait Plugin {
+    /// Kaldes én gang efter renderer + assets er klar. For init: spawn entities, load assets.
+    fn init(&mut self, ctx: &mut InitContext);
+
+    /// Fixed-update (60 Hz). Simulering: bevægelse, AI, fysik.
+    fn update(&mut self, ctx: &mut UpdateContext);
+
+    /// Render (hver frame). Tilføj sprites til batch.
+    fn render(&mut self, ctx: &mut RenderContext);
+}
+
+/// Kontekst givet til Plugin::init.
+pub struct InitContext<'a> {
+    pub world: &'a mut World,
+    pub assets: &'a mut AssetStore,
+    pub camera: &'a mut Camera,
+}
+
+/// Kontekst givet til Plugin::update (fixed timestep).
+pub struct UpdateContext<'a> {
+    pub world: &'a mut World,
+    pub input: &'a InputState,
+    pub camera: &'a mut Camera,
+    pub dt: f32,
+    pub sim_time: f32,
+}
+
+/// Kontekst givet til Plugin::render.
+pub struct RenderContext<'a> {
+    pub world: &'a World,
+    pub batch: &'a mut SpriteBatch,
+    pub camera: &'a Camera,
+    pub alpha: f32,
+    pub debug: &'a DebugOverlay,
+}
+
+/// Builder til at konfigurere App før run.
+pub struct AppBuilder {
+    config: AppConfig,
+    plugins: Vec<Box<dyn Plugin>>,
+    input_map: InputMap,
+}
+
+impl AppBuilder {
+    pub fn new() -> Self {
+        Self {
+            config: AppConfig::default(),
+            plugins: Vec::new(),
+            input_map: InputMap::default(),
+        }
+    }
+
+    pub fn config(mut self, config: AppConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    pub fn plugin<P: Plugin + 'static>(mut self, plugin: P) -> Self {
+        self.plugins.push(Box::new(plugin));
+        self
+    }
+
+    pub fn input_map(mut self, map: InputMap) -> Self {
+        self.input_map = map;
+        self
+    }
+
+    pub fn build(self) -> Result<App, AppError> {
+        Ok(App {
+            config: self.config,
+            plugins: self.plugins,
+            input_map: self.input_map,
+        })
+    }
+}
+
+/// Hoved-App.
 pub struct App {
     config: AppConfig,
+    plugins: Vec<Box<dyn Plugin>>,
+    input_map: InputMap,
 }
 
 impl App {
-    pub fn new(config: AppConfig) -> Result<Self, AppError> {
-        Ok(Self { config })
-    }
-
-    /// Kør main loop. Blokerer indtil vinduet lukker.
     pub fn run(self) -> Result<(), AppError> {
-        tracing::info!("Heat City: main loop startet");
+        tracing::info!("Heat City: main loop startet (Fase 1)");
 
         let event_loop = EventLoop::new().map_err(|e| AppError::EventLoop(e.to_string()))?;
 
@@ -72,8 +145,18 @@ impl App {
             window: None,
             renderer: None,
             config: self.config,
+            plugins: self.plugins,
+            input_map: self.input_map,
+            world: World::new(),
+            assets: AssetStore::new(),
+            input: InputState::new(),
+            time: Time::new(),
+            camera: Camera::new(1280.0, 720.0),
+            batch: SpriteBatch::new(),
+            fps: FpsCounter::new(),
+            debug: DebugOverlay::default(),
+            initialized: false,
             running: true,
-            last_frame: Instant::now(),
         };
 
         let result = event_loop
@@ -90,8 +173,18 @@ struct AppState {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     config: AppConfig,
+    plugins: Vec<Box<dyn Plugin>>,
+    input_map: InputMap,
+    world: World,
+    assets: AssetStore,
+    input: InputState,
+    time: Time,
+    camera: Camera,
+    batch: SpriteBatch,
+    fps: FpsCounter,
+    debug: DebugOverlay,
+    initialized: bool,
     running: bool,
-    last_frame: Instant,
 }
 
 impl ApplicationHandler for AppState {
@@ -110,6 +203,12 @@ impl ApplicationHandler for AppState {
                 let window = Arc::new(window);
                 match pollster::block_on(Renderer::new(window.clone())) {
                     Ok(renderer) => {
+                        let (w, h) = renderer.surface_size();
+                        self.camera.resize(w as f32, h as f32);
+                        self.assets.bind_gpu(
+                            renderer.device().clone(),
+                            renderer.queue().clone(),
+                        );
                         self.window = Some(window);
                         self.renderer = Some(renderer);
                     }
@@ -147,26 +246,114 @@ impl ApplicationHandler for AppState {
             WindowEvent::Resized(physical_size) => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(physical_size.width, physical_size.height);
+                    self.camera
+                        .resize(physical_size.width as f32, physical_size.height as f32);
                 }
             }
             WindowEvent::RedrawRequested => {
-                let _dt = self.last_frame.elapsed();
-                self.last_frame = Instant::now();
-
-                if let Some(renderer) = self.renderer.as_mut() {
-                    if let Err(e) = renderer.render(self.config.clear_color) {
-                        tracing::error!("Render fejl: {e}");
-                        event_loop.exit();
-                    }
-                }
+                self.input.handle_event(&WindowEvent::RedrawRequested); // no-op, bare for formen
+                self.render_frame();
+                self.input.clear_edges();
             }
-            _ => {}
+            ref other => {
+                self.input.handle_event(other);
+            }
         }
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
+        }
+    }
+}
+
+impl AppState {
+    fn init_plugins(&mut self) {
+        if self.initialized {
+            return;
+        }
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        let _ = renderer; // allerede bound via assets.bind_gpu
+
+        for plugin in &mut self.plugins {
+            plugin.init(&mut InitContext {
+                world: &mut self.world,
+                assets: &mut self.assets,
+                camera: &mut self.camera,
+            });
+        }
+        self.initialized = true;
+        tracing::info!("Plugins initialiseret ({} plugins)", self.plugins.len());
+    }
+
+    fn render_frame(&mut self) {
+        self.init_plugins();
+
+        // 1. Tick time.
+        let steps = self.time.tick();
+        self.fps.tick();
+        self.debug.fps = self.fps.fps();
+        self.debug.frame_delta = self.time.frame_delta;
+
+        // 2. Process input → actions.
+        self.input.end_frame(&self.input_map);
+
+        // 3. Toggle debug på F1.
+        if self.input.action_pressed(Action::ToggleDebug) {
+            self.debug.toggle();
+        }
+
+        // 4. Fixed updates (simulering).
+        for _ in 0..steps {
+            let mut ctx = UpdateContext {
+                world: &mut self.world,
+                input: &self.input,
+                camera: &mut self.camera,
+                dt: self.time.fixed_dt(),
+                sim_time: self.time.sim_time,
+            };
+            for plugin in &mut self.plugins {
+                plugin.update(&mut ctx);
+            }
+            self.time.step_done();
+        }
+        self.time.calc_alpha();
+        self.debug.sim_time = self.time.sim_time;
+        self.debug.entity_count = self.world.entity_count();
+
+        // 5. Render.
+        self.batch.clear();
+        for plugin in &mut self.plugins {
+            plugin.render(&mut RenderContext {
+                world: &self.world,
+                batch: &mut self.batch,
+                camera: &self.camera,
+                alpha: self.time.alpha,
+                debug: &self.debug,
+            });
+        }
+
+        if let Some(renderer) = self.renderer.as_mut() {
+            if self.batch.len() > 0 {
+                if let Err(e) = self.batch.render(renderer, &self.assets, &self.camera) {
+                    tracing::error!("Render fejl: {e}");
+                }
+            } else {
+                if let Err(e) = renderer.clear_only(&self.camera) {
+                    tracing::error!("Clear fejl: {e}");
+                }
+            }
+        }
+
+        // 6. Debug output (log-baseret for Fase 1; on-screen i Fase 11).
+        if self.debug.enabled && self.time.sim_time % 1.0 < 0.016 {
+            let txt = self.debug.text();
+            if !txt.is_empty() && self.time.sim_time > 0.0 {
+                tracing::info!("{}", txt);
+            }
         }
     }
 }

@@ -40,15 +40,15 @@
 - [x] `docs/01-game-design/gdd.md` (v1)
 - [x] `docs/02-technical-design/tdd.md` (v1)
 - [x] `docs/03-roadmap/roadmap.md`
-- [ ] `docs/04-agent-delegation/matrix.md`
-- [ ] `docs/09-decisions/ADR-001-engine-choice.md`
-- [ ] `docs/09-decisions/ADR-002-ecs-choice.md`
-- [ ] `docs/09-decisions/ADR-003-data-format.md`
+- [x] `docs/04-agent-delegation/matrix.md`
+- [x] `docs/09-decisions/ADR-001-engine-choice.md`
+- [x] `docs/09-decisions/ADR-002-ecs-choice.md`
+- [x] `docs/09-decisions/ADR-003-data-format.md`
 - [x] Installer Rust toolchain, verificer cargo
-- [ ] Opret cargo workspace (`engine/` + `game/` crates)
-- [ ] Skriv "hello window" — winit + wgpu der clearer skærmen blå
-- [ ] `docs/10-changelog/sprint-01.md`
-- [ ] Git init + GitHub repo oprettelse + push
+- [x] Opret cargo workspace (`engine/` + `game/` crates)
+- [x] Skriv "hello window" — winit + wgpu der clearer skærmen blå
+- [x] `docs/10-changelog/sprint-01.md`
+- [x] Git init + GitHub repo oprettelse + push
 
 ### Milestone M0
 
@@ -71,14 +71,14 @@ Dokumenter godkendt + `cargo run` åbner et vindue der clearer skærmen.
 
 ### Opgaver
 
-- [ ] ECS-integration (hecs, hvis ADR-002 godkender)
-- [ ] Input-system (winit, keyboard/mouse mapping)
-- [ ] Renderer: sprite-batching, kamera, layers
-- [ ] Asset-loader (textures, data RON)
-- [ ] Tilemap-renderer
-- [ ] Tids-loop (fixed timestep sim, interpoleret render)
-- [ ] Basis debugging-overlay (FPS, entity count)
-- [ ] Logging (tracing crate)
+- [x] ECS-integration (hecs)
+- [x] Input-system (winit, keyboard/mouse mapping)
+- [x] Renderer: sprite-batching, kamera, layers
+- [x] Asset-loader (textures, data RON)
+- [~] Tilemap-renderer (udskudt til Fase 2 — sprite-renderer kan tegne tiles)
+- [x] Tids-loop (fixed timestep sim, interpoleret render)
+- [x] Basis debugging-overlay (FPS, entity count)
+- [x] Logging (tracing crate)
 - [ ] Enhedstests for kerne-moduler
 
 ### Milestone M1
