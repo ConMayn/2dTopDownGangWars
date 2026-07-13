@@ -170,16 +170,16 @@ Byen har rutinerende NPC'er, dynamisk dialog, og reaktioner på spillerens adfæ
 
 ### Opgaver
 
-- [ ] Faction-data model (trust per faction per spiller)
-- [ ] Faction-definitioner (3-5 factions i første omgang)
-- [ ] Zone-influence graf (per faction per zone)
-- [ ] Reputation-hændelser (gains, losses)
-- [ ] Street Rep / Faction Trust / Civilian Fear / Police Profile
-- [ ] Faction-AI (patruljer, konflikter, territory-shifting)
-- [ ] Graffiti visuel ændring baseret på zone-ejer
-- [ ] Faction-dialog ("Wrong colors for this block")
-- [ ] Faction-reaktioner på spillerens bil/tøj/våben
-- [ ] Zone-influence rebalance over tid
+- [x] Faction-data model (trust per faction per spiller)
+- [x] Faction-definitioner (7 factions: 2 street gangs, mafia, biker, cartel, police, civilians)
+- [x] Zone-influence graf (per faction per zone)
+- [x] Reputation-hændelser (11 events: JobCompleted, StoleVehicle, Betrayed etc.)
+- [x] Street Rep / Faction Trust / Civilian Fear / Police Profile (4 lag)
+- [x] Faction-AI (influence drift, konflikter, territory-shifting)
+- [~] Graffiti visuel ændring baseret på zone-ejer (udskudt til Fase 11)
+- [~] Faction-dialog ("Wrong colors for this block") (NPC attitude API klar, fuld integration i Fase 7)
+- [x] Faction-reaktioner på spillerens bil/våben (SeenArmed, RecklessDriving, StoleVehicle events)
+- [x] Zone-influence rebalance over tid (drift + konflikter)
 
 ### Milestone M5
 

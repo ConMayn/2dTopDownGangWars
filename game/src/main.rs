@@ -2,6 +2,7 @@
 //!
 //! Fase 4: WorldPlugin med NPC FSM, dag/nat-cyklus, dialog, spatial grid.
 
+mod factions;
 mod systems;
 mod world;
 

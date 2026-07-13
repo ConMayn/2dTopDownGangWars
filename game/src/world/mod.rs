@@ -22,12 +22,17 @@ use hecs::Entity;
 
 use collision::move_and_collide;
 use npc::{Npc, NpcType, Patrol, update_npc_dialog, update_npcs};
+use crate::factions::{FactionAi, FactionRegistry, InfluenceGraph, ReputationState, RepEvent};
 use crate::systems::spatial::SpatialGrid;
 use crate::systems::world_time::{TimeOfDay, WorldTime};
 use tilemap::{Tilemap, TilemapDef};
 use tiles::{TileDef, TileRegistry, TileType};
 use vehicle::{Vehicle, VehicleRegistry, collide_vehicle_with_tilemap, update_vehicle_physics};
 use zone::ZoneDef;
+
+/// Nuværende zone ID (hvilken zone spilleren er i).
+/// Fase 5: simpel — én zone (east_blocks). Fase 6+: flere zoner med overgange.
+const CURRENT_ZONE: &str = "east_blocks";
 
 /// Player-komponent.
 #[derive(Debug, Clone, Copy)]
@@ -42,7 +47,7 @@ pub struct Player {
     pub armed: bool,
 }
 
-/// Hoved-plugin for Fase 2-4: byen + spiller + NPC + vehicles + tid.
+/// Hoved-plugin for Fase 2-5: byen + spiller + NPC + vehicles + tid + factions.
 pub struct WorldPlugin {
     tile_registry: TileRegistry,
     tilemap: Option<Tilemap>,
@@ -54,6 +59,15 @@ pub struct WorldPlugin {
     vehicle_textures: Vec<TextureHandle>,
     world_time: WorldTime,
     spatial: SpatialGrid,
+    // Fase 5: factions
+    faction_registry: FactionRegistry,
+    influence_graph: InfluenceGraph,
+    reputation: ReputationState,
+    faction_ai: FactionAi,
+    /// Timer for at generere "seen armed" / "reckless driving" events.
+    rep_event_timer: f32,
+    /// Tidligere spiller-position (til at detektere hastighed/reckless driving).
+    prev_player_pos: Vec2,
 }
 
 impl WorldPlugin {
@@ -69,6 +83,12 @@ impl WorldPlugin {
             vehicle_textures: Vec::new(),
             world_time: WorldTime::new(),
             spatial: SpatialGrid::new(64.0),
+            faction_registry: FactionRegistry::from_defaults(),
+            influence_graph: InfluenceGraph::new(),
+            reputation: ReputationState::new(),
+            faction_ai: FactionAi::new(),
+            rep_event_timer: 0.0,
+            prev_player_pos: Vec2::ZERO,
         }
     }
 
@@ -311,10 +331,9 @@ impl WorldPlugin {
 
     /// Håndter ind/udstigning af biler. Kaldes ved E-tast.
     fn handle_vehicle_enter_exit(
-        &self,
+        &mut self,
         world: &mut World,
         player_entity: hecs::Entity,
-        _tilemap: &Tilemap,
     ) {
         // Tjek om spiller allerede er i en bil.
         let in_vehicle = world
@@ -386,6 +405,41 @@ impl WorldPlugin {
                 vehicle_ref.stolen = true;
             }
             tracing::info!("Steg ind i bil");
+
+            // Generér StoleVehicle reputation event.
+            let event = RepEvent::StoleVehicle {
+                faction: String::new(), // ukendt ejer for nu
+            };
+            self.faction_ai.handle_event(&mut self.reputation, &event);
+        }
+    }
+
+    /// Generér reputation-events baseret på spillerens adfærd.
+    /// Kaldes periodisk (~hver 2. sim-sek).
+    fn generate_rep_events(&mut self, player_pos: Vec2, player_armed: bool) {
+        let mut events: Vec<RepEvent> = Vec::new();
+
+        // 1. Spiller med våben i nærheden af NPC'er → SeenArmed.
+        if player_armed {
+            let nearby = self.spatial.query_radius(player_pos, 80.0);
+            if !nearby.is_empty() {
+                events.push(RepEvent::SeenArmed {
+                    zone: CURRENT_ZONE.to_string(),
+                });
+            }
+        }
+
+        // 2. Reckless driving: hvis spilleren bevæger sig hurtigt.
+        let player_speed = (player_pos - self.prev_player_pos).length() / 0.016;
+        if player_speed > 300.0 {
+            events.push(RepEvent::RecklessDriving {
+                zone: CURRENT_ZONE.to_string(),
+            });
+        }
+
+        // Apply events.
+        for event in &events {
+            self.faction_ai.handle_event(&mut self.reputation, event);
         }
     }
 }
@@ -444,15 +498,21 @@ impl Plugin for WorldPlugin {
         // Spawn vehicles.
         self.spawn_vehicles(ctx.world);
 
+        // Initialisér influence-graf for east_blocks zone.
+        // Southline Kings dominerer (60%), civilians 30%, police 10%.
+        self.influence_graph.init_zone(CURRENT_ZONE, "southline_kings", 10.0);
+
         tracing::info!(
-            "WorldPlugin init: tilemap {}x{}, player + NPCs + vehicles spawned",
+            "WorldPlugin init: tilemap {}x{}, {} factions, influence graph init, player + NPCs + vehicles",
             px_w as i32,
-            px_h as i32
+            px_h as i32,
+            self.faction_registry.len(),
         );
     }
 
     fn update(&mut self, ctx: &mut UpdateContext) {
-        let Some(tilemap) = &self.tilemap else { return };
+        // Klon tilemap ud af self for at undgå borrow-konflikt med &mut self kald.
+        let Some(tilemap) = self.tilemap.clone() else { return };
 
         // Advance world time.
         self.world_time.advance(ctx.dt);
@@ -468,7 +528,7 @@ impl Plugin for WorldPlugin {
         let interact_pressed = ctx.input.action_pressed(Action::Interact);
         if interact_pressed {
             if let Some(player_entity) = self.player_entity {
-                self.handle_vehicle_enter_exit(ctx.world, player_entity, tilemap);
+                self.handle_vehicle_enter_exit(ctx.world, player_entity);
             }
         }
 
@@ -492,7 +552,7 @@ impl Plugin for WorldPlugin {
                         let def_id = vehicle_ref.def_id.clone();
                         if let Some(def) = self.vehicle_registry.get(&def_id) {
                             update_vehicle_physics(&mut vehicle_ref, def, -my, mx, handbrake, ctx.dt);
-                            collide_vehicle_with_tilemap(&mut vehicle_ref, def, tilemap, &self.tile_registry);
+                            collide_vehicle_with_tilemap(&mut vehicle_ref, def, &tilemap, &self.tile_registry);
                             Some(vehicle_ref.pos)
                         } else {
                             None
@@ -517,7 +577,7 @@ impl Plugin for WorldPlugin {
                 if let Ok(mut player_ref) = ctx.world.inner_mut().get::<&mut Player>(player_entity) {
                     let player = &mut *player_ref;
                     let half = Vec2::new(16.0, 16.0);
-                    let result = move_and_collide(player.pos, half, delta, tilemap, &self.tile_registry);
+                    let result = move_and_collide(player.pos, half, delta, &tilemap, &self.tile_registry);
                     player.pos = result.new_pos;
                     ctx.camera.follow(player.pos);
                 }
@@ -536,7 +596,7 @@ impl Plugin for WorldPlugin {
             (Vec2::ZERO, false)
         };
 
-        update_npcs(ctx.world, tilemap, &self.tile_registry, player_pos, player_armed, ctx.sim_time, ctx.dt);
+        update_npcs(ctx.world, &tilemap, &self.tile_registry, player_pos, player_armed, ctx.sim_time, ctx.dt);
 
         // Opdatér spatial grid (rebuild per frame).
         self.spatial.clear();
@@ -549,6 +609,24 @@ impl Plugin for WorldPlugin {
 
         // NPC dialog for dem tæt på spilleren.
         update_npc_dialog(ctx.world, player_pos, player_armed, self.world_time.time_of_day());
+
+        // Fase 5: Faction-AI update (influence drift, konflikter, reputation decay).
+        self.faction_ai.update(
+            &self.faction_registry,
+            &mut self.influence_graph,
+            &mut self.reputation,
+            ctx.dt,
+        );
+
+        // Generér reputation events baseret på spillerens adfærd.
+        self.rep_event_timer += ctx.dt;
+        if self.rep_event_timer > 2.0 {
+            self.rep_event_timer = 0.0;
+            self.generate_rep_events(player_pos, player_armed);
+        }
+
+        // Opdatér prev_player_pos.
+        self.prev_player_pos = player_pos;
     }
 
     fn render(&mut self, ctx: &mut RenderContext) {
