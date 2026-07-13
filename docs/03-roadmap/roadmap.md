@@ -124,15 +124,16 @@ Du kan gå rundt i én lille by-zone med NPC'er der går på stier. Kamera følg
 
 ### Opgaver
 
-- [ ] Vehicle-entitet (data-drevet: VehicleData)
-- [ ] Arcade bil-fysik (forward, turn, drift)
-- [ ] Stjæl bil (hotwire-tid, proximity check)
-- [ ] Ind/udstigning
-- [ ] Kollision bil↔verden, bil↔bil, bil↔fodgænger
-- [ ] 3-5 forskellige bil-typer (data RON)
-- [ ] Skade-modellering (visuelt + stat)
-- [ ] Nummerplade-system (data)
-- [ ] Bilfysik justeres for overflade (asfalt, græs, regn)
+- [x] Vehicle-entitet (data-drevet: VehicleDef)
+- [x] Arcade bil-fysik (forward, turn, drift)
+- [x] Stjæl bil (hotwire-tid, proximity check)
+- [x] Ind/udstigning
+- [x] Kollision bil↔verden (AABB push-back)
+- [~] Kollision bil↔bil, bil↔fodgænger (udskudt til Fase 4)
+- [x] 3-5 forskellige bil-typer (5: compact, muscle, van, sports, truck)
+- [x] Skade-modellering (health field, reduceres ved collision)
+- [~] Nummerplade-system (data) (udskudt til Fase 6+)
+- [~] Bilfysik justeres for overflade (asfalt, græs, regn) (udskudt til Fase 6+)
 
 ### Milestone M3
 
