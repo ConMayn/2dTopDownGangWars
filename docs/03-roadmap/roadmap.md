@@ -101,16 +101,16 @@ En spilmotor der kan loade og tegne et tilemap + en sprite. Kan flytte en sprite
 
 ### Opgaver
 
-- [ ] Spiller-entitet (position, velocity, collision)
-- [ ] Bevægelse (WASD/gamepad)
-- [ ] Collision (AABB, solid tiles)
-- [ ] Kamera (follow + clamp til zone bounds)
-- [ ] Én test-zone (East Blocks lille version — 2000x1500 px)
-- [ ] Tilemap med gader, bygninger, fortorve
-- [ ] Basis NPC'er der går på stier
-- [ ] Dør/indgang interaktioner
-- [ ] Zone-definition RON format implementeret
-- [ ] Zone-overgange (prototype)
+- [x] Spiller-entitet (position, velocity, collision)
+- [x] Bevægelse (WASD/gamepad)
+- [x] Collision (AABB, solid tiles)
+- [x] Kamera (follow + clamp til zone bounds)
+- [x] Én test-zone (East Blocks lille version — 800x608 px)
+- [x] Tilemap med gader, bygninger, fortorve
+- [x] Basis NPC'er der går på stier
+- [~] Dør/indgang interaktioner (udskudt til Fase 4)
+- [x] Zone-definition RON format implementeret
+- [~] Zone-overgange (prototype) (udskudt til Fase 5+ hvor flere zoner findes)
 
 ### Milestone M2
 

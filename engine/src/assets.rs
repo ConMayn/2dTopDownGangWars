@@ -168,6 +168,11 @@ impl AssetStore {
         self.textures.get(&handle.id)
     }
 
+    /// Hent texture handle via sti (hvis allerede loadet).
+    pub fn get_texture_by_path(&self, path: &Path) -> Option<&TextureHandle> {
+        self.texture_paths.get(path)
+    }
+
     /// Load og parse en RON-fil ind i en typed struct.
     pub fn load_data<T: DeserializeOwned>(&self, path: &Path) -> Result<T, AppError> {
         let content = std::fs::read_to_string(path)
