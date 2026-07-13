@@ -5,7 +5,9 @@
 //! med collision mod tilemap.
 
 pub mod collision;
+pub mod dialog;
 pub mod npc;
+pub mod npc_fsm;
 pub mod tilemap;
 pub mod tiles;
 pub mod vehicle;
@@ -19,10 +21,12 @@ use heat_core::input::Action;
 use hecs::Entity;
 
 use collision::move_and_collide;
-use npc::{Npc, NpcType, Patrol, update_npc_patrol};
+use npc::{Npc, NpcType, Patrol, update_npc_dialog, update_npcs};
+use crate::systems::spatial::SpatialGrid;
+use crate::systems::world_time::{TimeOfDay, WorldTime};
 use tilemap::{Tilemap, TilemapDef};
 use tiles::{TileDef, TileRegistry, TileType};
-use vehicle::{Vehicle, VehicleDef, VehicleRegistry, collide_vehicle_with_tilemap, update_vehicle_physics};
+use vehicle::{Vehicle, VehicleRegistry, collide_vehicle_with_tilemap, update_vehicle_physics};
 use zone::ZoneDef;
 
 /// Player-komponent.
@@ -34,9 +38,11 @@ pub struct Player {
     pub in_vehicle: Option<Entity>,
     /// Interact-timer: forhindrer spam af E.
     pub interact_cooldown: f32,
+    /// Har spilleren et våben fremme? (placeholder — Fase 6: rigtigt våbensystem).
+    pub armed: bool,
 }
 
-/// Hoved-plugin for Fase 2/3: byen + spiller + NPC + vehicles.
+/// Hoved-plugin for Fase 2-4: byen + spiller + NPC + vehicles + tid.
 pub struct WorldPlugin {
     tile_registry: TileRegistry,
     tilemap: Option<Tilemap>,
@@ -46,6 +52,8 @@ pub struct WorldPlugin {
     player_texture: Option<TextureHandle>,
     npc_texture: Option<TextureHandle>,
     vehicle_textures: Vec<TextureHandle>,
+    world_time: WorldTime,
+    spatial: SpatialGrid,
 }
 
 impl WorldPlugin {
@@ -59,6 +67,8 @@ impl WorldPlugin {
             player_texture: None,
             npc_texture: None,
             vehicle_textures: Vec::new(),
+            world_time: WorldTime::new(),
+            spatial: SpatialGrid::new(64.0),
         }
     }
 
@@ -238,26 +248,39 @@ impl WorldPlugin {
         Tilemap::new(def, 32.0)
     }
 
-    /// Spawn NPC'ere med patrol-ruter.
+    /// Spawn NPC'ere med patrol-ruter (flere typer).
     fn spawn_npcs(&self, world: &mut World, tilemap: &Tilemap) {
-        let npc_spawns = [
+        // Pedestrians med patrol-ruter.
+        let pedestrian_spawns = [
             (Vec2::new(100.0, 100.0), vec![Vec2::new(100.0, 100.0), Vec2::new(200.0, 100.0), Vec2::new(200.0, 150.0), Vec2::new(100.0, 150.0)]),
             (Vec2::new(600.0, 400.0), vec![Vec2::new(600.0, 400.0), Vec2::new(650.0, 400.0), Vec2::new(650.0, 450.0), Vec2::new(600.0, 450.0)]),
             (Vec2::new(400.0, 200.0), vec![Vec2::new(400.0, 200.0), Vec2::new(450.0, 200.0), Vec2::new(450.0, 250.0), Vec2::new(400.0, 250.0)]),
         ];
 
-        for (pos, waypoints) in npc_spawns {
-            let npc = Npc {
-                pos,
-                npc_type: NpcType::Pedestrian,
-                speed: 60.0,
-                current_waypoint: 0,
-                color: [0.4, 0.7, 0.4, 1.0],
-            };
+        for (pos, waypoints) in pedestrian_spawns {
+            let npc = Npc::new(pos, NpcType::Pedestrian);
             let patrol = Patrol { waypoints };
             let _entity = world.spawn((npc, patrol));
         }
+
+        // Shopkeeper (stationær nær en bygning).
+        let shopkeeper = Npc::new(Vec2::new(150.0, 300.0), NpcType::Shopkeeper);
+        let shop_patrol = Patrol { waypoints: vec![Vec2::new(150.0, 300.0), Vec2::new(180.0, 300.0)] };
+        let _entity = world.spawn((shopkeeper, shop_patrol));
+
+        // Gang members (patruljerer i grupper).
+        let gang_spawns = [
+            (Vec2::new(500.0, 100.0), vec![Vec2::new(500.0, 100.0), Vec2::new(550.0, 100.0), Vec2::new(550.0, 150.0), Vec2::new(500.0, 150.0)]),
+            (Vec2::new(250.0, 450.0), vec![Vec2::new(250.0, 450.0), Vec2::new(300.0, 450.0), Vec2::new(300.0, 500.0), Vec2::new(250.0, 500.0)]),
+        ];
+        for (pos, waypoints) in gang_spawns {
+            let npc = Npc::new(pos, NpcType::GangMember);
+            let patrol = Patrol { waypoints };
+            let _entity = world.spawn((npc, patrol));
+        }
+
         let _ = tilemap;
+        tracing::info!("Spawned NPCs: 3 pedestrians, 1 shopkeeper, 2 gang members");
     }
 
     /// Spawn biler på gaderne.
@@ -410,9 +433,10 @@ impl Plugin for WorldPlugin {
             speed: 180.0,
             in_vehicle: None,
             interact_cooldown: 0.0,
+            armed: false,
         }));
 
-        // Spawn NPC's.
+        // Spawn NPC's (inkl. flere typer).
         if let Some(ref tm) = self.tilemap {
             self.spawn_npcs(ctx.world, tm);
         }
@@ -429,6 +453,9 @@ impl Plugin for WorldPlugin {
 
     fn update(&mut self, ctx: &mut UpdateContext) {
         let Some(tilemap) = &self.tilemap else { return };
+
+        // Advance world time.
+        self.world_time.advance(ctx.dt);
 
         // Decay interact cooldown.
         if let Some(entity) = self.player_entity {
@@ -458,9 +485,8 @@ impl Plugin for WorldPlugin {
             if let Some(vehicle_entity) = in_vehicle {
                 // Spiller kører bil — opdatér bil-fysik.
                 let (mx, my) = ctx.input.movement();
-                let handbrake = ctx.input.action_down(Action::Sprint); // Shift = handbrake
+                let handbrake = ctx.input.action_down(Action::Sprint);
 
-                // Hent vehicle position og opdatér physics i ét borrow.
                 let new_vehicle_pos = {
                     if let Ok(mut vehicle_ref) = ctx.world.inner_mut().get::<&mut Vehicle>(vehicle_entity) {
                         let def_id = vehicle_ref.def_id.clone();
@@ -476,7 +502,6 @@ impl Plugin for WorldPlugin {
                     }
                 };
 
-                // Sync player position med bilen (separat borrow).
                 if let Some(vp) = new_vehicle_pos {
                     if let Ok(mut player_ref) = ctx.world.inner_mut().get::<&mut Player>(player_entity) {
                         player_ref.pos = vp;
@@ -499,8 +524,31 @@ impl Plugin for WorldPlugin {
             }
         }
 
-        // NPC patrol update.
-        update_npc_patrol(ctx.world, tilemap, &self.tile_registry, ctx.dt);
+        // NPC update med FSM, movement, collision.
+        let (player_pos, player_armed) = if let Some(player_entity) = self.player_entity {
+            ctx.world
+                .inner()
+                .get::<&Player>(player_entity)
+                .ok()
+                .map(|p| (p.pos, p.armed))
+                .unwrap_or((Vec2::ZERO, false))
+        } else {
+            (Vec2::ZERO, false)
+        };
+
+        update_npcs(ctx.world, tilemap, &self.tile_registry, player_pos, player_armed, ctx.sim_time, ctx.dt);
+
+        // Opdatér spatial grid (rebuild per frame).
+        self.spatial.clear();
+        {
+            let inner = ctx.world.inner();
+            for (entity, npc) in &mut inner.query::<&Npc>() {
+                self.spatial.insert(entity, npc.pos);
+            }
+        }
+
+        // NPC dialog for dem tæt på spilleren.
+        update_npc_dialog(ctx.world, player_pos, player_armed, self.world_time.time_of_day());
     }
 
     fn render(&mut self, ctx: &mut RenderContext) {
@@ -536,16 +584,23 @@ impl Plugin for WorldPlugin {
             }
         }
 
-        // Render NPC's.
+        // Render NPC's (farve baseret på state).
         let inner = ctx.world.inner();
         for (_, (npc,)) in &mut inner.query::<(&Npc,)>() {
             if let Some(tex) = self.npc_texture {
+                // Farve baseret på state.
+                let color = match npc.state {
+                    npc_fsm::NpcState::Panic => Color::rgba(1.0, 0.3, 0.3, 1.0),
+                    npc_fsm::NpcState::Flee => Color::rgba(0.9, 0.5, 0.3, 1.0),
+                    npc_fsm::NpcState::Talk => Color::rgba(0.3, 0.8, 1.0, 1.0),
+                    _ => Color::rgba(npc.color[0], npc.color[1], npc.color[2], npc.color[3]),
+                };
                 ctx.batch.add(Sprite {
                     texture: tex,
                     position: npc.pos,
                     size: Vec2::new(24.0, 24.0),
                     rotation: 0.0,
-                    color: Color::rgba(npc.color[0], npc.color[1], npc.color[2], npc.color[3]),
+                    color,
                     layer: heat_core::render::LAYER_ENTITIES,
                 });
             }

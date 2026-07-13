@@ -1,9 +1,8 @@
 //! heat_game — Heat City game binary.
 //!
-//! Fase 2: WorldPlugin med tilemap, collision, NPC patrol og player movement.
-//! Beviser: by-zone (East Blocks lille), gå med WASD, collision mod bygninger,
-//! NPC'ere der patroljerer waypoints, kamera follow + clamp.
+//! Fase 4: WorldPlugin med NPC FSM, dag/nat-cyklus, dialog, spatial grid.
 
+mod systems;
 mod world;
 
 use heat_core::AppBuilder;
@@ -17,7 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    tracing::info!("Heat City Fase 2 — starter");
+    tracing::info!("Heat City Fase 4 — starter");
 
     let app = AppBuilder::new()
         .plugin(WorldPlugin::new())

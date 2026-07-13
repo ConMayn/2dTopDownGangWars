@@ -147,16 +147,16 @@ Spilleren kan stjæle en bil, køre den rundt, og forlade den. Forskellige biler
 
 ### Opgaver
 
-- [ ] NPC FSM (Idle, Walk, Work, Flee, Panic, Talk)
-- [ ] Roller: arbejder, butiksejer, betjent, bandemedlem, taxi, dørmand
-- [ ] Daglige rutiner (schedule-data per NPC-type)
-- [ ] Mikro-dialog (dynamisk baseret på player state)
-- [ ] Trafik-AI (biler kører på veje, holder for rødt, undgår collision)
-- [ ] Reaktions-system (flygte fra kaos, ringe til politi, sladre)
-- [ ] Spatial partitioning (grid) til query performance
-- [ ] NPC memory (husker spillerens handlinger lokalt)
-- [ ] Pathfinding (A* eller navmesh)
-- [ ] Dag/nat-cyklus (verdens-tid)
+- [x] NPC FSM (Idle, Walk, Flee, Panic, Talk)
+- [x] Roller: pedestrian, shopkeeper, gang_member (3 af mange — flere i Fase 5+)
+- [~] Daglige rutiner (schedule-data per NPC-type) (basis patrol-ruter, fuld schedule i Fase 5+)
+- [x] Mikro-dialog (dynamisk baseret på player state)
+- [~] Trafik-AI (biler kører på veje) (udskudt til Fase 5+)
+- [x] Reaktions-system (flygte fra fare, frygt-system)
+- [x] Spatial partitioning (grid) til query performance
+- [x] NPC memory (husker spillerens handlinger lokalt — fear + witnessed_crime)
+- [~] Pathfinding (A* eller navmesh) (udskudt til Fase 5+)
+- [x] Dag/nat-cyklus (verdens-tid)
 
 ### Milestone M4
 
