@@ -1,6 +1,6 @@
 #![allow(dead_code)] // `zone` og `Player::speed` er public/stub felter.
 
-//! World — binder tilemap, zone, NPC, missioner, dialog, økonomi, safehouses, crew, businesses og heists sammen.
+//! World — binder alle spil-systemer sammen (Fase 10).
 //!
 //! WorldPlugin er en engine Plugin der ejer den nuværende zone,
 //! renderer tilemap, opdaterer NPC'ere og lader spilleren bevæge sig
@@ -35,6 +35,10 @@ use crate::safehouses::{SafehousePortfolio};
 use crate::crew::{Crew};
 use crate::businesses::{BusinessPortfolio};
 use crate::heists::{HeistManager, HeistPlan, HeistOutcome, Approach, EscapeRoute, Diversion, default_heists};
+use crate::director::{DirectorState, DirectorEvent};
+use crate::events::{EventManager, EventKind};
+use crate::news::{NewsSystem, NewsKind};
+use crate::rivals::{RivalSystem, RivalKind};
 use tilemap::{Tilemap, TilemapDef};
 use tiles::{TileDef, TileRegistry, TileType};
 use vehicle::{Vehicle, VehicleRegistry, collide_vehicle_with_tilemap, update_vehicle_physics};
@@ -102,6 +106,11 @@ pub struct WorldPlugin {
     heist_manager: HeistManager,
     /// Tast for at starte en heist (proof: auto-start første heist med E+Q).
     heist_test_timer: f32,
+    // Fase 10: AI director + events + news + rivals
+    director: DirectorState,
+    event_manager: EventManager,
+    news: NewsSystem,
+    rivals: RivalSystem,
 }
 
 impl WorldPlugin {
@@ -138,6 +147,10 @@ impl WorldPlugin {
             economy_tick_timer: 0.0,
             heist_manager: HeistManager::new(),
             heist_test_timer: 0.0,
+            director: DirectorState::new(),
+            event_manager: EventManager::new(),
+            news: NewsSystem::new(),
+            rivals: RivalSystem::new(),
         }
     }
 
@@ -675,10 +688,9 @@ impl WorldPlugin {
             );
         }
         // Heat.
-        if let Some(pe) = self.player_entity {
+        if self.player_entity.is_some() {
             let pos = self.prev_player_pos;
             self.wanted.add_heat(outcome.heat, 0.0, pos);
-            let _ = pe;
         }
         // Crew-skader: justér loyalitet/fear.
         for cid in &outcome.crew_injured {
@@ -693,6 +705,67 @@ impl WorldPlugin {
             &mut self.reputation,
             &RepEvent::WonFight { reputation_gain: outcome.faction_trust_delta },
         );
+    }
+
+    /// Fase 10: Håndtér director-triggeret event.
+    fn handle_director_event(&mut self, event: DirectorEvent, player_pos: Vec2, sim_time: f32) {
+        tracing::info!("Director event: {}", event.label());
+        match event {
+            DirectorEvent::RandomStreetEvent => {
+                // Spawn en gade-event nær spilleren.
+                let kind = EventKind::GangSkirmish;
+                let pos = [player_pos.x + 100.0, player_pos.y + 50.0];
+                self.event_manager.spawn(kind, CURRENT_ZONE, pos);
+                self.news.publish(
+                    NewsKind::LocalEvent,
+                    "Gang skirmish reported",
+                    "Two crews are squaring off in East Blocks. Police monitoring.",
+                    sim_time,
+                );
+            }
+            DirectorEvent::AmbientFlavor => {
+                self.event_manager.spawn(EventKind::BikerConvoy, CURRENT_ZONE, [400.0, 300.0]);
+                self.news.publish(
+                    NewsKind::LocalEvent,
+                    "Biker convoy spotted",
+                    "A large biker convoy is rolling through the city.",
+                    sim_time,
+                );
+            }
+            DirectorEvent::PolicePressure => {
+                self.event_manager.spawn(EventKind::TrafficStop, CURRENT_ZONE, [300.0, 200.0]);
+                self.news.publish(
+                    NewsKind::PoliceBlotter,
+                    "Increased police patrols",
+                    "Police are stepping up presence in response to recent activity.",
+                    sim_time,
+                );
+            }
+            DirectorEvent::RivalAttack => {
+                if let Some(rival) = self.rivals.rivals.first_mut() {
+                    let action = rival.on_action_taken();
+                    tracing::info!("Rival {} took action: {}", rival.name, action.label());
+                    self.news.publish(
+                        NewsKind::GangNews,
+                        "Rival makes a move",
+                        &format!("{} is making moves against you.", rival.name),
+                        sim_time,
+                    );
+                }
+            }
+            DirectorEvent::ContactCall => {
+                self.news.publish_rumor(
+                    "A contact wants to reach you. Word is they have a job.",
+                    sim_time,
+                );
+            }
+            DirectorEvent::NewsReport => {
+                self.news.publish_player_action(
+                    "Witnesses describe a suspect fleeing the scene.",
+                    sim_time,
+                );
+            }
+        }
     }
 
     fn apply_dialog_effect(&mut self,
@@ -810,8 +883,16 @@ impl Plugin for WorldPlugin {
             self.heist_manager.add_available(def);
         }
 
+        // Fase 10: seed rivals.
+        self.rivals.add(RivalKind::GangLeader, "Marcus 'Mad Dog' Reyes");
+        self.rivals.add(RivalKind::BountyHunter, "Sledge");
+        self.rivals.add(RivalKind::Cop, "Det. Sarah Voss");
+
+        // Fase 10: seed nyheder.
+        self.news.publish(NewsKind::LocalEvent, "Heat City wakes up", "Another day in the city. Stay sharp out there.", 0.0);
+
         tracing::info!(
-            "WorldPlugin init: tilemap {}x{}, {} factions, {} missions, economy starter $$$, {} safehouses, {} crew, {} businesses, {} heists, influence graph init, player + NPCs + vehicles",
+            "WorldPlugin init: tilemap {}x{}, {} factions, {} missions, economy starter $$$, {} safehouses, {} crew, {} businesses, {} heists, {} rivals, {} news, influence graph init, player + NPCs + vehicles",
             px_w as i32,
             px_h as i32,
             self.faction_registry.len(),
@@ -820,6 +901,8 @@ impl Plugin for WorldPlugin {
             self.crew.members.len(),
             self.businesses.owned.len(),
             self.heist_manager.available.len(),
+            self.rivals.rivals.len(),
+            self.news.count(),
         );
     }
 
@@ -1015,6 +1098,21 @@ impl Plugin for WorldPlugin {
             self.heist_test_timer = 0.0;
         }
 
+        // Fase 10: AI Director, events, news, rivals.
+        let heat = self.wanted.heat_points;
+        let cash = self.economy.wallet.cash;
+        self.director.update(heat, cash, ctx.dt);
+        if let Some(director_event) = self.director.should_trigger() {
+            self.handle_director_event(director_event, player_pos, ctx.sim_time);
+            self.director.on_event_triggered();
+        }
+        // Tick events: fjern udløbne.
+        let _expired = self.event_manager.tick(ctx.dt);
+        // Tick news: aldring.
+        self.news.tick(ctx.dt);
+        // Tick rivals.
+        self.rivals.tick(ctx.dt);
+
         // Fase 7: Dialog input (E toggler/interagerer med dialog).
         self.dialog_cooldown = (self.dialog_cooldown - ctx.dt).max(0.0);
         if self.dialog_cooldown == 0.0 && ctx.input.action_pressed(Action::Interact) {
@@ -1029,7 +1127,7 @@ impl Plugin for WorldPlugin {
         // Debug: vis økonomi og aktive missioner + Fase 8 stats.
         if ctx.input.action_pressed(Action::ToggleDebug) {
             tracing::info!(
-                "Wallet: ${}/${} | Missions: {} active | Dialog: {} | Safehouses: {} | Crew: {} | Businesses: {} (risk avg {:.0}) | Heists avail: {} active: {}",
+                "Wallet: ${}/${} | Missions: {} active | Dialog: {} | Safehouses: {} | Crew: {} | Businesses: {} (risk avg {:.0}) | Heists avail: {} active: {} | Director: {} (calm {:.0}s) | Events: {} | News: {} | Rivals: {} (hostile {}, bounty ${})",
                 self.economy.wallet.cash,
                 self.economy.wallet.clean,
                 self.mission_tracker.active().len(),
@@ -1042,6 +1140,13 @@ impl Plugin for WorldPlugin {
                 },
                 self.heist_manager.available.len(),
                 self.heist_manager.active.is_some(),
+                self.director.tension.label(),
+                self.director.calm_time,
+                self.event_manager.active_count(),
+                self.news.count(),
+                self.rivals.rivals.len(),
+                self.rivals.hostile_count(),
+                self.rivals.total_bounty(),
             );
         }
 
