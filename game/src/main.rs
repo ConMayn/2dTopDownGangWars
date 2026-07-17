@@ -17,6 +17,7 @@ mod police;
 mod rivals;
 mod safehouses;
 mod save;
+mod sprites;
 mod systems;
 mod ui;
 mod world;

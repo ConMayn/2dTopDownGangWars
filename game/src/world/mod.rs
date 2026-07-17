@@ -164,49 +164,56 @@ impl WorldPlugin {
         }
     }
 
-    /// Opret test-assets (PNG filer) for Fase 2-6.
+    /// Opret procedurale sprites (Fase 12 visuel overhaling).
     fn create_test_assets(&self, assets: &mut heat_core::AssetStore) -> Result<(), AppError> {
-        // Player texture: 32x32 blå
+        use crate::sprites;
+
+        // Player: detaljeret karakter-sprite med våben.
         let player_path = std::env::temp_dir().join("heat_city_player.png");
-        let mut img = image::ImageBuffer::new(32, 32);
-        for p in img.pixels_mut() {
-            *p = image::Rgba([80, 140, 220, 255]);
-        }
-        let _ = image::save_buffer(&player_path, &img, 32, 32, image::ExtendedColorType::Rgba8);
+        let player_img = sprites::generate_player();
+        let _ = image::save_buffer(&player_path, &player_img, 32, 32, image::ExtendedColorType::Rgba8);
 
-        // NPC texture: 24x24 grøn
+        // NPC: grøn karakter.
         let npc_path = std::env::temp_dir().join("heat_city_npc.png");
-        let mut img2 = image::ImageBuffer::new(24, 24);
-        for p in img2.pixels_mut() {
-            *p = image::Rgba([100, 180, 100, 255]);
-        }
-        let _ = image::save_buffer(&npc_path, &img2, 24, 24, image::ExtendedColorType::Rgba8);
+        let npc_img = sprites::generate_npc([100, 180, 100]);
+        let _ = image::save_buffer(&npc_path, &npc_img, 24, 24, image::ExtendedColorType::Rgba8);
 
-        // Police texture: 24x32 mørkeblå
+        // Politi: mørkeblå karakter med badge og våben.
         let police_path = std::env::temp_dir().join("heat_city_police.png");
-        let mut pimg = image::ImageBuffer::new(24, 32);
-        for p in pimg.pixels_mut() {
-            *p = image::Rgba([30, 50, 120, 255]);
-        }
-        let _ = image::save_buffer(&police_path, &pimg, 24, 32, image::ExtendedColorType::Rgba8);
+        let police_img = sprites::generate_police();
+        let _ = image::save_buffer(&police_path, &police_img, 32, 32, image::ExtendedColorType::Rgba8);
 
-        // Vehicle textures: en per bil-type, farvet efter VehicleDef.color.
+        // Vehicle textures: detaljerede biler per type.
         let mut i = 0;
         for def in self.vehicle_registry.defs() {
             let path = std::env::temp_dir().join(format!("heat_city_vehicle_{i}.png"));
-            let mut vimg = image::ImageBuffer::new(def.width as u32, def.height as u32);
-            for p in vimg.pixels_mut() {
-                *p = image::Rgba([
-                    (def.color[0] * 255.0) as u8,
-                    (def.color[1] * 255.0) as u8,
-                    (def.color[2] * 255.0) as u8,
-                    255,
-                ]);
-            }
+            let vimg = sprites::generate_vehicle(def.width as u32, def.height as u32, [def.color[0], def.color[1], def.color[2]]);
             let _ = image::save_buffer(&path, &vimg, def.width as u32, def.height as u32, image::ExtendedColorType::Rgba8);
             let _ = assets.load_texture(&path)?;
             i += 1;
         }
+
+        // Tile textures: procedurale mønstre.
+        let tile_size = 32u32;
+        let asphalt_path = std::env::temp_dir().join("heat_city_tile_asphalt.png");
+        let asphalt_img = sprites::generate_asphalt_tile(tile_size);
+        let _ = image::save_buffer(&asphalt_path, &asphalt_img, tile_size, tile_size, image::ExtendedColorType::Rgba8);
+        let _ = assets.load_texture(&asphalt_path)?;
+
+        let sidewalk_path = std::env::temp_dir().join("heat_city_tile_sidewalk.png");
+        let sidewalk_img = sprites::generate_sidewalk_tile(tile_size);
+        let _ = image::save_buffer(&sidewalk_path, &sidewalk_img, tile_size, tile_size, image::ExtendedColorType::Rgba8);
+        let _ = assets.load_texture(&sidewalk_path)?;
+
+        let building_path = std::env::temp_dir().join("heat_city_tile_building.png");
+        let building_img = sprites::generate_building_tile(tile_size);
+        let _ = image::save_buffer(&building_path, &building_img, tile_size, tile_size, image::ExtendedColorType::Rgba8);
+        let _ = assets.load_texture(&building_path)?;
+
+        let grass_path = std::env::temp_dir().join("heat_city_tile_grass.png");
+        let grass_img = sprites::generate_grass_tile(tile_size);
+        let _ = image::save_buffer(&grass_path, &grass_img, tile_size, tile_size, image::ExtendedColorType::Rgba8);
+        let _ = assets.load_texture(&grass_path)?;
 
         // Load player, npc og police textures.
         let _ = assets.load_texture(&player_path)?;
@@ -215,10 +222,12 @@ impl WorldPlugin {
         Ok(())
     }
 
-    /// Byg tile registry med basale tile-typer.
-    fn build_tile_registry(&self) -> TileRegistry {
+    /// Byg tile registry med basale tile-typer og procedurale textures.
+    fn build_tile_registry(&self, assets: &heat_core::AssetStore) -> TileRegistry {
         let mut reg = TileRegistry::new();
-        // asfalt (gader)
+
+        // asfalt (gader) — med gade-streger.
+        let asphalt_tex = assets.get_texture_by_path(&std::env::temp_dir().join("heat_city_tile_asphalt.png")).copied();
         reg.insert(
             "asphalt".into(),
             TileType {
@@ -228,10 +237,11 @@ impl WorldPlugin {
                     layer: heat_core::render::LAYER_GROUND,
                     color: [0.12, 0.12, 0.14, 1.0],
                 },
-                texture: None,
+                texture: asphalt_tex,
             },
         );
-        // fortov
+        // fortov — flise-mønster.
+        let sidewalk_tex = assets.get_texture_by_path(&std::env::temp_dir().join("heat_city_tile_sidewalk.png")).copied();
         reg.insert(
             "sidewalk".into(),
             TileType {
@@ -241,10 +251,11 @@ impl WorldPlugin {
                     layer: heat_core::render::LAYER_GROUND,
                     color: [0.25, 0.25, 0.28, 1.0],
                 },
-                texture: None,
+                texture: sidewalk_tex,
             },
         );
-        // græs
+        // græs.
+        let grass_tex = assets.get_texture_by_path(&std::env::temp_dir().join("heat_city_tile_grass.png")).copied();
         reg.insert(
             "grass".into(),
             TileType {
@@ -254,10 +265,11 @@ impl WorldPlugin {
                     layer: heat_core::render::LAYER_GROUND,
                     color: [0.15, 0.3, 0.15, 1.0],
                 },
-                texture: None,
+                texture: grass_tex,
             },
         );
-        // bygning (solid)
+        // bygning (solid) — mursten + vinduer.
+        let building_tex = assets.get_texture_by_path(&std::env::temp_dir().join("heat_city_tile_building.png")).copied();
         reg.insert(
             "building".into(),
             TileType {
@@ -267,10 +279,10 @@ impl WorldPlugin {
                     layer: heat_core::render::LAYER_ENTITIES,
                     color: [0.35, 0.3, 0.25, 1.0],
                 },
-                texture: None,
+                texture: building_tex,
             },
         );
-        // mur (solid)
+        // mur (solid).
         reg.insert(
             "wall".into(),
             TileType {
@@ -902,7 +914,7 @@ impl Plugin for WorldPlugin {
         }
 
         // Tile registry.
-        self.tile_registry = self.build_tile_registry();
+        self.tile_registry = self.build_tile_registry(ctx.assets);
 
         // Tilemap.
         let tilemap = self.build_test_tilemap();
@@ -1235,22 +1247,29 @@ impl Plugin for WorldPlugin {
     fn render(&mut self, ctx: &mut RenderContext) {
         let Some(tilemap) = &self.tilemap else { return };
 
-        // Render tilemap (kun synlige tiles).
+        // Render tilemap (med procedurale textures).
         tilemap.render(ctx, &self.tile_registry);
 
-        // Render vehicles.
+        // Render vehicles — match texture per def_id via index.
         let inner = ctx.world.inner();
         for (_, vehicle) in &mut inner.query::<&Vehicle>() {
-            let tex = self.vehicle_textures.iter().enumerate().find(|(_, _)| {
-                // Match vehicle def index. Vi bygger textures i samme rækkefølge som defs().
-                // Da defs() returnerer en iterator, og vi ikke kan matche direkte,
-                // bruger vi en simpel hash-map lookup i en rigtig implementation.
-                // For nu: bare brug første texture (Fase 3 proof).
-                true
-            }).map(|(_, t)| *t);
+            // Find vehicle def index for texture matching.
+            let tex_idx = self.vehicle_registry.defs().enumerate().find(|(_, def)| def.id == vehicle.def_id).map(|(i, _)| i);
+            let tex = tex_idx.and_then(|i| self.vehicle_textures.get(i).copied());
 
             if let Some(tex) = tex {
-                // Find bil-dimensioner fra registry.
+                if let Some(def) = self.vehicle_registry.get(&vehicle.def_id) {
+                    ctx.batch.add(Sprite {
+                        texture: tex,
+                        position: vehicle.pos,
+                        size: Vec2::new(def.width, def.height),
+                        rotation: vehicle.heading,
+                        color: Color::WHITE,
+                        layer: heat_core::render::LAYER_ENTITIES,
+                    });
+                }
+            } else if let Some(tex) = self.vehicle_textures.first().copied() {
+                // Fallback: brug første texture.
                 if let Some(def) = self.vehicle_registry.get(&vehicle.def_id) {
                     ctx.batch.add(Sprite {
                         texture: tex,
@@ -1264,15 +1283,14 @@ impl Plugin for WorldPlugin {
             }
         }
 
-        // Render NPC's (farve baseret på state).
+        // Render NPC's — detaljeret karakter-sprite, farve baseret på state.
         let inner = ctx.world.inner();
         for (_, (npc,)) in &mut inner.query::<(&Npc,)>() {
             if let Some(tex) = self.npc_texture {
-                // Farve baseret på state.
                 let color = match npc.state {
-                    npc_fsm::NpcState::Panic => Color::rgba(1.0, 0.3, 0.3, 1.0),
-                    npc_fsm::NpcState::Flee => Color::rgba(0.9, 0.5, 0.3, 1.0),
-                    npc_fsm::NpcState::Talk => Color::rgba(0.3, 0.8, 1.0, 1.0),
+                    npc_fsm::NpcState::Panic => Color::rgba(1.0, 0.4, 0.4, 1.0),
+                    npc_fsm::NpcState::Flee => Color::rgba(1.0, 0.6, 0.3, 1.0),
+                    npc_fsm::NpcState::Talk => Color::rgba(0.4, 0.9, 1.0, 1.0),
                     _ => Color::rgba(npc.color[0], npc.color[1], npc.color[2], npc.color[3]),
                 };
                 ctx.batch.add(Sprite {
@@ -1286,19 +1304,19 @@ impl Plugin for WorldPlugin {
             }
         }
 
-        // Render politi (Fase 6).
+        // Render politi — detaljeret karakter med badge, farve baseret på state.
         let inner = ctx.world.inner();
         for (_, (police,)) in &mut inner.query::<(&Police,)>() {
             if let Some(tex) = self.police_texture {
                 let color = match police.state {
-                    PoliceState::Pursue => Color::rgba(1.0, 0.4, 0.4, 1.0),
-                    PoliceState::Search => Color::rgba(1.0, 0.8, 0.3, 1.0),
+                    PoliceState::Pursue => Color::rgba(1.0, 0.3, 0.3, 1.0),
+                    PoliceState::Search => Color::rgba(1.0, 0.7, 0.2, 1.0),
                     _ => Color::WHITE,
                 };
                 ctx.batch.add(Sprite {
                     texture: tex,
                     position: police.pos,
-                    size: Vec2::new(24.0, 32.0),
+                    size: Vec2::new(32.0, 32.0),
                     rotation: police.heading,
                     color,
                     layer: heat_core::render::LAYER_ENTITIES + 2,
@@ -1306,7 +1324,7 @@ impl Plugin for WorldPlugin {
             }
         }
 
-        // Render player (kun hvis ikke i bil — bilen vises i stedet).
+        // Render player — detaljeret karakter med våben.
         if let (Some(tex), Some(entity)) = (self.player_texture, self.player_entity) {
             let in_vehicle = ctx
                 .world
@@ -1318,12 +1336,19 @@ impl Plugin for WorldPlugin {
 
             if in_vehicle.is_none() {
                 if let Ok(player_ref) = ctx.world.inner().get::<&Player>(entity) {
+                    // Heat glow: rød farve baseret på heat level.
+                    let heat_glow = if self.wanted.heat_points > 0.0 {
+                        let intensity = (self.wanted.heat_points / 100.0).min(1.0);
+                        Color::rgba(1.0, 1.0 - intensity * 0.5, 1.0 - intensity * 0.8, 1.0)
+                    } else {
+                        Color::WHITE
+                    };
                     ctx.batch.add(Sprite {
                         texture: tex,
                         position: player_ref.pos,
                         size: Vec2::new(32.0, 32.0),
                         rotation: 0.0,
-                        color: Color::WHITE,
+                        color: heat_glow,
                         layer: heat_core::render::LAYER_ENTITIES + 1,
                     });
                 }
