@@ -165,6 +165,7 @@ impl SpriteBatch {
     }
 
     /// Render alle queued sprites via givent renderer.
+    /// Multi-texture batching: sprites grupperes per texture, én draw per gruppe.
     pub fn render(
         &mut self,
         renderer: &mut Renderer,
@@ -193,18 +194,38 @@ impl SpriteBatch {
             bytemuck::cast_slice(&[view_proj]),
         );
 
-        // Grupper sprites pr. texture.
-        let mut current_tex: Option<u32> = None;
-        let mut index_count: u32 = 0;
+        // Byg vertices/indices for alle sprites, og track texture-grupper.
+        // Hver gruppe: (texture_handle, index_start, index_count).
+        let mut groups: Vec<(TextureHandle, u32, u32)> = Vec::new();
+        let mut current_tex: Option<TextureHandle> = None;
+        let mut group_index_start: u32 = 0;
+        let mut group_index_count: u32 = 0;
 
         for sprite in &self.sprites {
-            let Some(tex) = assets.get_texture(sprite.texture) else {
+            // Skip sprites med invalid texture — de kan ikke tegnes.
+            if assets.get_texture(sprite.texture).is_none() {
+                // Hvis vi har en aktiv gruppe, afslut den først.
+                if group_index_count > 0 {
+                    if let Some(tex) = current_tex {
+                        groups.push((tex, group_index_start, group_index_count));
+                    }
+                    group_index_start += group_index_count;
+                    group_index_count = 0;
+                }
+                current_tex = None;
                 continue;
-            };
-            // Hvis ny texture, flush (i en rigtig batcher ville vi have ét draw per batch;
-            // for Fase 1 holder vi det simpelt: ét draw per sprite-group per texture).
-            if current_tex != Some(sprite.texture.id()) {
-                current_tex = Some(sprite.texture.id());
+            }
+
+            // Ny texture-gruppe?
+            if current_tex != Some(sprite.texture) {
+                if group_index_count > 0 {
+                    if let Some(tex) = current_tex {
+                        groups.push((tex, group_index_start, group_index_count));
+                    }
+                    group_index_start += group_index_count;
+                    group_index_count = 0;
+                }
+                current_tex = Some(sprite.texture);
             }
 
             let hx = sprite.size.x * 0.5;
@@ -237,12 +258,16 @@ impl SpriteBatch {
                 base + 2,
                 base + 3,
             ]);
-            index_count += 6;
-
-            let _ = tex; // vil bruges i næste iteration for rigtig batching
+            group_index_count += 6;
+        }
+        // Afslut sidste gruppe.
+        if group_index_count > 0 {
+            if let Some(tex) = current_tex {
+                groups.push((tex, group_index_start, group_index_count));
+            }
         }
 
-        if index_count == 0 {
+        if groups.is_empty() || self.indices.is_empty() {
             renderer.clear_only(camera)?;
             return Ok(());
         }
@@ -284,23 +309,7 @@ impl SpriteBatch {
             .queue
             .write_buffer(&renderer.index_buf, 0, bytemuck::cast_slice(&self.indices));
 
-        // Find første sprite med en gyldig texture; hvis ingen, tegn bare clear.
-        let first_valid_texture = self
-            .sprites
-            .iter()
-            .find_map(|s| assets.get_texture(s.texture).map(|_| s.texture));
-        if let Some(tex) = first_valid_texture {
-            renderer.render_sprites(
-                camera,
-                &self.vertices,
-                &self.indices,
-                index_count,
-                assets,
-                tex,
-            )?;
-        } else {
-            renderer.clear_only(camera)?;
-        }
+        renderer.render_sprites_multi(camera, assets, &groups)?;
         Ok(())
     }
 }
@@ -576,15 +585,13 @@ impl Renderer {
         Ok(())
     }
 
-    /// Tegn sprites med sprite-pipelinen.
-    pub(crate) fn render_sprites(
+    /// Tegn sprites med multi-texture batching.
+    /// `groups`: liste af (texture_handle, index_start, index_count).
+    pub(crate) fn render_sprites_multi(
         &mut self,
         camera: &Camera,
-        _vertices: &[SpriteVertex],
-        _indices: &[u16],
-        index_count: u32,
         assets: &AssetStore,
-        first_texture: TextureHandle,
+        groups: &[(TextureHandle, u32, u32)],
     ) -> Result<(), AppError> {
         let view_proj = camera.view_proj();
         self.queue
@@ -626,36 +633,40 @@ impl Renderer {
             });
 
             pass.set_pipeline(&self.sprite_pipeline);
-
-            // For Fase 1: tegn alt med første texture (enkel batching; Fase 2 forbedrer).
-            if let Some(tex) = assets.get_texture(first_texture) {
-                let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("sprite bind group"),
-                    layout: &self.bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: self.camera_uniform_buf.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureView(&tex.view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: wgpu::BindingResource::Sampler(&tex.sampler),
-                        },
-                    ],
-                });
-                pass.set_bind_group(0, &bind_group, &[]);
-            }
-
             pass.set_vertex_buffer(0, self.vertex_buf.slice(..));
             pass.set_index_buffer(
                 self.index_buf.slice(..),
                 wgpu::IndexFormat::Uint16,
             );
-            pass.draw_indexed(0..index_count, 0, 0..1);
+
+            // Ét draw_indexed per texture-gruppe.
+            for (tex_handle, index_start, index_count) in groups {
+                if *index_count == 0 {
+                    continue;
+                }
+                if let Some(tex) = assets.get_texture(*tex_handle) {
+                    let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("sprite bind group"),
+                        layout: &self.bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: self.camera_uniform_buf.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::TextureView(&tex.view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::Sampler(&tex.sampler),
+                            },
+                        ],
+                    });
+                    pass.set_bind_group(0, &bind_group, &[]);
+                    pass.draw_indexed(*index_start..(*index_start + *index_count), 0, 0..1);
+                }
+            }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
