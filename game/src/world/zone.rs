@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Public API til fremtidige zone-transitions.
+
 //! Zone — zone-definition format for Heat City.
 //!
 //! En zone er et område af byen (East Blocks, Downtown etc.).

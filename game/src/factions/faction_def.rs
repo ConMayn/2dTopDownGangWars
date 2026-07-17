@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Store dele af faction API er public/stub til fremtidigt gameplay.
+
 //! Faction — definitioner for byens grupper.
 //!
 //! Hver faction har personlighed, økonomi, aggression, hjem-zoner og allierede/fjender.

@@ -1,3 +1,5 @@
+#![allow(dead_code)] // TimeOfDay helpers er public API.
+
 //! World time — dag/nat-cyklus for Heat City.
 //!
 //! Simuleret tid: 1 spil-time = ~2 minutter real-tid (24 timer = ~48 min).

@@ -1,3 +1,5 @@
+#![allow(dead_code)] // `zone` og `Player::speed` er public/stub felter.
+
 //! World — binder tilemap, zone, NPC sammen.
 //!
 //! WorldPlugin er en engine Plugin der ejer den nuværende zone,
@@ -726,7 +728,6 @@ impl Plugin for WorldPlugin {
 
         // Render vehicles.
         let inner = ctx.world.inner();
-        let vehicle_idx = 0usize;
         for (_, vehicle) in &mut inner.query::<&Vehicle>() {
             let tex = self.vehicle_textures.iter().enumerate().find(|(_, _)| {
                 // Match vehicle def index. Vi bygger textures i samme rækkefølge som defs().

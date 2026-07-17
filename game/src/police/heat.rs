@@ -1,3 +1,5 @@
+#![allow(dead_code)] // HeatLevel-helpers og CrimeType er public API til fremtidige krim-events.
+
 //! Heat — wanted-level system (Heat 1-6).
 //!
 //! Fra GDD afsnit 6:

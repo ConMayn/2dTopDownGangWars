@@ -1,3 +1,5 @@
+#![allow(dead_code)] // `npc_attitude` og helpers er public API til dialog-systemet.
+
 //! Faction AI — beslutninger, patruljer, konflikter.
 //!
 //! Fase 5: simpel faction-AI der opdaterer influence over tid, reagerer på
@@ -72,8 +74,8 @@ impl FactionAi {
             // Angrib en af defender's home zones.
             for zone_id in &defender.home_zones {
                 if let Some(inf) = graph.get_mut(zone_id) {
-                    let defender_pct = inf.get(&defender.id);
-                    let attacker_pct = inf.get(&attacker.id);
+                    let _defender_pct = inf.get(&defender.id);
+                    let _attacker_pct = inf.get(&attacker.id);
                     // Konflikt: angribers influence stiger, defenders falder.
                     let change = if attacker.aggression > 0.6 { 3.0 } else { 1.5 };
                     inf.add_influence(&attacker.id, change);

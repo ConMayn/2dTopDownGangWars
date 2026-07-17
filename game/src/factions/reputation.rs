@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Mange rep-events/metoder er public API til fremtidige systemer.
+
 //! Reputation — spillerens omdømme i byen.
 //!
 //! Fire lag (fra GDD afsnit 5):

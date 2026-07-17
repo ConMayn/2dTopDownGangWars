@@ -1,3 +1,5 @@
+#![allow(dead_code)] // width/height helpers er public API.
+
 //! Tilemap — grid-baseret map af tiles.
 //!
 //! Et Tilemap er et 2D grid af tile-ID'er. Hver celle refererer til en tile-type

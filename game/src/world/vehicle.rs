@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Public API til fremtidigt damage/hotwire system.
+
 //! Vehicle — biler, fysik, stjæl/ind/udstigning.
 //!
 //! Fase 3: arcade bil-fysik (forward, turn, drift), hotwire, ind/udstigning,

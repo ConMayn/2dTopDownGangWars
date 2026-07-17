@@ -324,7 +324,6 @@ pub struct Renderer {
     pub(crate) vertex_buf_size: usize,
     pub(crate) index_buf_size: usize,
     pub(crate) bind_group_layout: wgpu::BindGroupLayout,
-    pub(crate) current_bind_group: Option<wgpu::BindGroup>,
 }
 
 impl Renderer {
@@ -517,7 +516,6 @@ impl Renderer {
             vertex_buf_size: 4096,
             index_buf_size: 4096,
             bind_group_layout,
-            current_bind_group: None,
         })
     }
 

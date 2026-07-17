@@ -1,3 +1,5 @@
+#![allow(dead_code)] // hit_x/hit_y er public API til fremtidig reaktions-logik.
+
 //! Collision — AABB vs solid tiles.
 //!
 //! Bevægelse-resolve: flyt først på X-aksen, check collision, resolve.

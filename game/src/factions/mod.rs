@@ -3,6 +3,8 @@
 //! Dette er spillets "signatur-feature": byen husker dig. Hver bande, hvert
 //! kvarter, politiet og civile husker dine valg.
 
+#![allow(unused_imports)] // Mange re-exports er public API endnu ikke konsumeret.
+
 pub mod faction_ai;
 pub mod faction_def;
 pub mod influence;

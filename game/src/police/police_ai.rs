@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Politi-fields/helpers er public API til fremtidige zoner/roadblocks.
+
 //! Police AI — search, pursue, roadblocks.
 //!
 //! Fase 6: Politi-entiteter der patruljerer, søger efter spilleren ved last_seen_pos,

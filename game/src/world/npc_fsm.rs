@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Public API/stub til fremtidige vidne-krime events.
+
 //! NPC FSM — state machine for NPC'er.
 //!
 //! Fase 4: Idle, Walk, Flee, Panic, Talk.

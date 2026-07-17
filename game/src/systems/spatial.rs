@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Public helper API.
+
 //! Spatial grid — grid-baseret spatial partitioning.
 //!
 //! Deler verdenen op i celler. Bruges til at finde entiteter i nærheden

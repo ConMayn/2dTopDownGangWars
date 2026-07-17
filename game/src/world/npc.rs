@@ -1,3 +1,5 @@
+#![allow(dead_code)] // NPC helpers er public API til fremtidig dialog/UI.
+
 //! NPC — entiteter der lever i byen.
 //!
 //! Fase 2: simple patrol.

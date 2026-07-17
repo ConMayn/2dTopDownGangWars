@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Public API endnu ikke konsumeret overalt.
+
 //! Zone influence — territorie-kontrol system.
 //!
 //! Hver zone har influence-procenter per faction (sum = 100%).

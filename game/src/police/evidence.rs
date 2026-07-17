@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Mange evidence-metoder er public API til fremtidige flugt-mekanikker.
+
 //! Evidence — bevis-system for politiefterforskning.
 //!
 //! Fra GDD afsnit 26: politiet tracker abstrakt beviser:
