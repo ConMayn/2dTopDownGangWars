@@ -118,6 +118,8 @@ pub struct WorldPlugin {
     save_slots: SaveSlots,
     ui: UiState,
     audio: AudioSystem,
+    // Fase 12: font + text rendering
+    font_texture: Option<TextureHandle>,
 }
 
 impl WorldPlugin {
@@ -161,6 +163,7 @@ impl WorldPlugin {
             save_slots: SaveSlots::new(),
             ui: UiState::new(),
             audio: AudioSystem::new(),
+            font_texture: None,
         }
     }
 
@@ -219,6 +222,12 @@ impl WorldPlugin {
         let _ = assets.load_texture(&player_path)?;
         let _ = assets.load_texture(&npc_path)?;
         let _ = assets.load_texture(&police_path)?;
+
+        // Font atlas.
+        let font_path = std::env::temp_dir().join("heat_city_font.png");
+        let font_img = crate::font::generate_font_atlas();
+        let _ = image::save_buffer(&font_path, &font_img, crate::font::ATLAS_W, crate::font::ATLAS_H, image::ExtendedColorType::Rgba8);
+        let _ = assets.load_texture(&font_path)?;
         Ok(())
     }
 
@@ -901,6 +910,10 @@ impl Plugin for WorldPlugin {
             .assets
             .get_texture_by_path(&std::env::temp_dir().join("heat_city_police.png"))
             .copied();
+        self.font_texture = ctx
+            .assets
+            .get_texture_by_path(&std::env::temp_dir().join("heat_city_font.png"))
+            .copied();
 
         // Load vehicle textures.
         self.vehicle_textures.clear();
@@ -1266,6 +1279,7 @@ impl Plugin for WorldPlugin {
                         rotation: vehicle.heading,
                         color: Color::WHITE,
                         layer: heat_core::render::LAYER_ENTITIES,
+                        uv_rect: None,
                     });
                 }
             } else if let Some(tex) = self.vehicle_textures.first().copied() {
@@ -1278,6 +1292,7 @@ impl Plugin for WorldPlugin {
                         rotation: vehicle.heading,
                         color: Color::WHITE,
                         layer: heat_core::render::LAYER_ENTITIES,
+                        uv_rect: None,
                     });
                 }
             }
@@ -1300,6 +1315,7 @@ impl Plugin for WorldPlugin {
                     rotation: 0.0,
                     color,
                     layer: heat_core::render::LAYER_ENTITIES,
+                    uv_rect: None,
                 });
             }
         }
@@ -1320,6 +1336,7 @@ impl Plugin for WorldPlugin {
                     rotation: police.heading,
                     color,
                     layer: heat_core::render::LAYER_ENTITIES + 2,
+                    uv_rect: None,
                 });
             }
         }
@@ -1350,7 +1367,67 @@ impl Plugin for WorldPlugin {
                         rotation: 0.0,
                         color: heat_glow,
                         layer: heat_core::render::LAYER_ENTITIES + 1,
+                        uv_rect: None,
                     });
+                }
+            }
+        }
+
+        // Fase 12: HUD tekst-rendering (overlay i screen-space).
+        if let Some(font_tex) = self.font_texture {
+            let text_renderer = crate::text::TextRenderer::new();
+            // Midlertidig: brug font_texture via text renderer.
+            let mut tr = text_renderer;
+            tr.set_font(font_tex);
+            // HUD position: top-left af skærm (kamera top-left + margin).
+            let cam = ctx.camera;
+            let hud_x = cam.position.x - cam.viewport_w * 0.5 / cam.zoom + 8.0;
+            let hud_y = cam.position.y - cam.viewport_h * 0.5 / cam.zoom + 8.0;
+            let scale = 2.0; // 16x16 px per tegn.
+            let line_h = 12.0;
+
+            // Linje 1: Wallet.
+            let wallet_text = format!("${}  ${}", self.economy.wallet.cash, self.economy.wallet.clean);
+            let mut sprites = Vec::new();
+            tr.add_text(&mut sprites, Vec2::new(hud_x, hud_y), &wallet_text, scale, Color::rgba(1.0, 0.9, 0.3, 1.0), heat_core::render::LAYER_UI);
+            // Linje 2: Heat.
+            let heat_text = format!("HEAT: {} ({:.0})", self.wanted.level.label(), self.wanted.heat_points);
+            let heat_color = if self.wanted.heat_points > 50.0 {
+                Color::rgba(1.0, 0.2, 0.2, 1.0)
+            } else if self.wanted.heat_points > 20.0 {
+                Color::rgba(1.0, 0.6, 0.2, 1.0)
+            } else {
+                Color::rgba(0.5, 1.0, 0.5, 1.0)
+            };
+            tr.add_text(&mut sprites, Vec2::new(hud_x, hud_y + line_h), &heat_text, scale, heat_color, heat_core::render::LAYER_UI);
+            // Linje 3: Mission objective.
+            if let Some(ref obj) = self.ui.hud.current_objective {
+                let obj_text = format!("OBJ: {}", &obj[..obj.len().min(40)]);
+                tr.add_text(&mut sprites, Vec2::new(hud_x, hud_y + line_h * 2.0), &obj_text, scale, Color::rgba(0.8, 0.8, 1.0, 1.0), heat_core::render::LAYER_UI);
+            }
+            // Linje 4: News ticker.
+            if let Some(ref news) = self.ui.hud.news_ticker {
+                let news_text = format!("NEWS: {}", &news[..news.len().min(50)]);
+                tr.add_text(&mut sprites, Vec2::new(hud_x, hud_y + line_h * 3.0), &news_text, scale, Color::rgba(0.7, 0.7, 0.7, 1.0), heat_core::render::LAYER_UI);
+            }
+            // Tilføj tekst-sprites til batch.
+            for sprite in sprites {
+                ctx.batch.add(sprite);
+            }
+
+            // Dialog tekst (centreret på skærm).
+            if let Some(ref dialog_text) = self.ui.hud.dialog_text {
+                let dialog_x = cam.position.x - crate::text::TextRenderer::text_width(dialog_text, scale) * 0.5;
+                let dialog_y = cam.position.y + cam.viewport_h * 0.3 / cam.zoom;
+                let mut dialog_sprites = Vec::new();
+                tr.add_text(&mut dialog_sprites, Vec2::new(dialog_x, dialog_y), dialog_text, scale, Color::rgba(1.0, 1.0, 1.0, 1.0), heat_core::render::LAYER_UI + 1);
+                // Valg.
+                for (i, choice) in self.ui.hud.dialog_choices.iter().enumerate() {
+                    let choice_text = format!("{}. {}", i + 1, choice);
+                    tr.add_text(&mut dialog_sprites, Vec2::new(dialog_x, dialog_y + line_h * (i as f32 + 1.5)), &choice_text, scale, Color::rgba(0.8, 0.9, 1.0, 1.0), heat_core::render::LAYER_UI + 1);
+                }
+                for sprite in dialog_sprites {
+                    ctx.batch.add(sprite);
                 }
             }
         }

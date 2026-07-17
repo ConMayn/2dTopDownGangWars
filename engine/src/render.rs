@@ -120,6 +120,9 @@ pub struct Sprite {
     pub rotation: f32,
     pub color: Color,
     pub layer: i32,
+    /// Optional UV-rect (u0, v0, u1, v1) i 0.0-1.0 range for sub-region af texture.
+    /// None = brug hele texture (0,0,1,1).
+    pub uv_rect: Option<[f32; 4]>,
 }
 
 impl Sprite {
@@ -131,6 +134,7 @@ impl Sprite {
             rotation: 0.0,
             color: Color::WHITE,
             layer: LAYER_ENTITIES,
+            uv_rect: None,
         }
     }
 }
@@ -234,11 +238,14 @@ impl SpriteBatch {
             let sin = sprite.rotation.sin();
             let c = sprite.color.0;
 
+            // UV: brug uv_rect hvis sat, ellers hele texture (0,0,1,1).
+            let uv = sprite.uv_rect.unwrap_or([0.0, 0.0, 1.0, 1.0]);
+            let (u0, v0, u1, v1) = (uv[0], uv[1], uv[2], uv[3]);
             let corners = [
-                (-hx, -hy, 0.0, 0.0),
-                (hx, -hy, 1.0, 0.0),
-                (hx, hy, 1.0, 1.0),
-                (-hx, hy, 0.0, 1.0),
+                (-hx, -hy, u0, v0),
+                (hx, -hy, u1, v0),
+                (hx, hy, u1, v1),
+                (-hx, hy, u0, v1),
             ];
             let base = self.vertices.len() as u16;
             for (lx, ly, u, v) in corners {

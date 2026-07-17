@@ -10,6 +10,7 @@ mod director;
 mod economy;
 mod events;
 mod factions;
+mod font;
 mod heists;
 mod missions;
 mod news;
@@ -19,6 +20,7 @@ mod safehouses;
 mod save;
 mod sprites;
 mod systems;
+mod text;
 mod ui;
 mod world;
 

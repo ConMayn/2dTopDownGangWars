@@ -107,6 +107,7 @@ impl Tilemap {
                         rotation: 0.0,
                         color,
                         layer: tile_type.def.layer,
+                        uv_rect: None,
                     });
                 } else {
                     // Fallback: tegn som farvet quad (brug en null texture — Fase 1 renderer
@@ -118,6 +119,7 @@ impl Tilemap {
                         rotation: 0.0,
                         color,
                         layer: tile_type.def.layer,
+                        uv_rect: None,
                     });
                 }
             }
