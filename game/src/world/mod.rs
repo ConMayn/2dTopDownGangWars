@@ -39,6 +39,9 @@ use crate::director::{DirectorState, DirectorEvent};
 use crate::events::{EventManager, EventKind};
 use crate::news::{NewsSystem, NewsKind};
 use crate::rivals::{RivalSystem, RivalKind};
+use crate::save::SaveSlots;
+use crate::ui::UiState;
+use crate::audio::{AudioSystem, RadioStation};
 use tilemap::{Tilemap, TilemapDef};
 use tiles::{TileDef, TileRegistry, TileType};
 use vehicle::{Vehicle, VehicleRegistry, collide_vehicle_with_tilemap, update_vehicle_physics};
@@ -111,6 +114,10 @@ pub struct WorldPlugin {
     event_manager: EventManager,
     news: NewsSystem,
     rivals: RivalSystem,
+    // Fase 11: save + UI + audio
+    save_slots: SaveSlots,
+    ui: UiState,
+    audio: AudioSystem,
 }
 
 impl WorldPlugin {
@@ -151,6 +158,9 @@ impl WorldPlugin {
             event_manager: EventManager::new(),
             news: NewsSystem::new(),
             rivals: RivalSystem::new(),
+            save_slots: SaveSlots::new(),
+            ui: UiState::new(),
+            audio: AudioSystem::new(),
         }
     }
 
@@ -768,6 +778,62 @@ impl WorldPlugin {
         }
     }
 
+    /// Fase 11: Opdatér HUD-state fra alle spil-systemer.
+    fn update_hud(&mut self) {
+        self.ui.hud.cash = self.economy.wallet.cash;
+        self.ui.hud.clean = self.economy.wallet.clean;
+        self.ui.hud.set_heat(self.wanted.level.label(), self.wanted.heat_points);
+        // Aktive missioner.
+        self.ui.hud.active_missions = self
+            .mission_tracker
+            .missions
+            .iter()
+            .filter(|m| m.status == crate::missions::MissionStatus::Active)
+            .map(|m| m.def.title.clone())
+            .collect();
+        // Current objective.
+        if let Some(idx) = self.mission_tracker.active().first() {
+            if let Some(m) = self.mission_tracker.missions.get(*idx) {
+                if let Some(obj) = m.current_objective() {
+                    self.ui.hud.set_objective(&format!("{:?}", obj));
+                } else {
+                    self.ui.hud.clear_objective();
+                }
+            }
+        } else {
+            self.ui.hud.clear_objective();
+        }
+        // Verdens-tid.
+        self.ui.hud.time_formatted = self.world_time.formatted();
+        self.ui.hud.time_of_day_label = self.world_time.time_of_day().label().to_string();
+        // Crew status.
+        self.ui.hud.crew_status = self
+            .crew
+            .members
+            .iter()
+            .map(|m| (m.name.clone(), m.loyalty_status().to_string()))
+            .collect();
+        // Events i nærheden.
+        self.ui.hud.nearby_events = self
+            .event_manager
+            .active
+            .iter()
+            .map(|e| e.kind.label().to_string())
+            .collect();
+        // News ticker.
+        if let Some(n) = self.news.latest(None).first() {
+            self.ui.hud.set_news_ticker(&n.headline);
+        }
+        // Dialog.
+        if let Some(ref dialog) = self.active_dialog {
+            let node = dialog.current_node();
+            let choices: Vec<String> = node.choices.iter().map(|c| c.text.clone()).collect();
+            self.ui.hud.set_dialog(&node.text, &choices);
+        } else {
+            self.ui.hud.clear_dialog();
+        }
+    }
+
     fn apply_dialog_effect(&mut self,
         effect: &crate::dialog::DialogEffect,
     ) {
@@ -890,6 +956,11 @@ impl Plugin for WorldPlugin {
 
         // Fase 10: seed nyheder.
         self.news.publish(NewsKind::LocalEvent, "Heat City wakes up", "Another day in the city. Stay sharp out there.", 0.0);
+
+        // Fase 11: seed radio-stationer.
+        self.audio.add_station(RadioStation::new("hot_97", "Hot 97 FM", "Hip-Hop"));
+        self.audio.add_station(RadioStation::new("klassik", "Klassik FM", "Classical"));
+        self.audio.add_station(RadioStation::new("scanner", "Police Scanner", "Talk"));
 
         tracing::info!(
             "WorldPlugin init: tilemap {}x{}, {} factions, {} missions, economy starter $$$, {} safehouses, {} crew, {} businesses, {} heists, {} rivals, {} news, influence graph init, player + NPCs + vehicles",
@@ -1113,6 +1184,10 @@ impl Plugin for WorldPlugin {
         // Tick rivals.
         self.rivals.tick(ctx.dt);
 
+        // Fase 11: UI + audio tick; opdatér HUD-state.
+        self.audio.tick();
+        self.update_hud();
+
         // Fase 7: Dialog input (E toggler/interagerer med dialog).
         self.dialog_cooldown = (self.dialog_cooldown - ctx.dt).max(0.0);
         if self.dialog_cooldown == 0.0 && ctx.input.action_pressed(Action::Interact) {
@@ -1127,7 +1202,7 @@ impl Plugin for WorldPlugin {
         // Debug: vis økonomi og aktive missioner + Fase 8 stats.
         if ctx.input.action_pressed(Action::ToggleDebug) {
             tracing::info!(
-                "Wallet: ${}/${} | Missions: {} active | Dialog: {} | Safehouses: {} | Crew: {} | Businesses: {} (risk avg {:.0}) | Heists avail: {} active: {} | Director: {} (calm {:.0}s) | Events: {} | News: {} | Rivals: {} (hostile {}, bounty ${})",
+                "Wallet: ${}/${} | Missions: {} active | Dialog: {} | Safehouses: {} | Crew: {} | Businesses: {} (risk avg {:.0}) | Heists avail: {} active: {} | Director: {} (calm {:.0}s) | Events: {} | News: {} | Rivals: {} (hostile {}, bounty ${}) | Menu: {} | Radio: {} | Audio muted: {}",
                 self.economy.wallet.cash,
                 self.economy.wallet.clean,
                 self.mission_tracker.active().len(),
@@ -1147,6 +1222,9 @@ impl Plugin for WorldPlugin {
                 self.rivals.rivals.len(),
                 self.rivals.hostile_count(),
                 self.rivals.total_bounty(),
+                self.ui.current_menu.map(|m| m.label()).unwrap_or("None"),
+                self.audio.active_radio.as_deref().unwrap_or("None"),
+                self.audio.muted,
             );
         }
 

@@ -1,8 +1,8 @@
 //! heat_game — Heat City game binary.
 //!
-//! Fase 10: WorldPlugin med NPC FSM, missioner, dialog, economy, factions,
-//! politi, safehouses, crew, businesses, heists, AI director, events, news, rivals.
+//! Fase 11: alle spil-systemer + save, UI, audio.
 
+mod audio;
 mod businesses;
 mod crew;
 mod dialog;
@@ -16,7 +16,9 @@ mod news;
 mod police;
 mod rivals;
 mod safehouses;
+mod save;
 mod systems;
+mod ui;
 mod world;
 
 use heat_core::AppBuilder;
@@ -30,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    tracing::info!("Heat City Fase 10 — starter");
+    tracing::info!("Heat City Fase 11 — starter");
 
     let app = AppBuilder::new()
         .plugin(WorldPlugin::new())
