@@ -131,6 +131,8 @@ pub struct WorldPlugin {
     player_health: Health,
     /// Retning spilleren kigger (baseret på movement).
     player_facing: Vec2,
+    /// Respawn-timer: >0 = død, tæller ned til respawn.
+    respawn_timer: f32,
 }
 
 impl WorldPlugin {
@@ -180,6 +182,7 @@ impl WorldPlugin {
             combat: CombatSystem::new(),
             player_health: Health::new(100.0),
             player_facing: Vec2::new(1.0, 0.0),
+            respawn_timer: 0.0,
         }
     }
 
@@ -721,6 +724,43 @@ impl WorldPlugin {
     }
 
     /// Fase 9: Anvend heist outcome — rewards, heat, evidence, crew-skader.
+    /// Respawn spiller ved safehouse: reset health, clear heat, teleport til home base.
+    fn respawn_player(&mut self, world: &mut heat_core::World) {
+        // Reset health.
+        self.player_health = Health::new(100.0);
+        // Clear heat + wanted.
+        self.wanted.clear();
+        // Clear projectiles (ingen lingering skud).
+        self.combat.projectiles.clear();
+        self.combat.blood_particles.clear();
+        // Respawn position: home safehouse zone center (for nu: tilemap center).
+        let respawn_pos = if let Some(ref tm) = self.tilemap {
+            Vec2::new(tm.pixel_width() * 0.5, tm.pixel_height() * 0.5)
+        } else {
+            Vec2::new(400.0, 300.0)
+        };
+        // Teleport player.
+        if let Some(pe) = self.player_entity {
+            if let Ok(mut player) = world.inner_mut().get::<&mut Player>(pe) {
+                player.pos = respawn_pos;
+                player.in_vehicle = None;
+                player.interact_cooldown = 1.0;
+            }
+        }
+        // Penalty: mist $500 cash (hospital/fixer omkostning).
+        let penalty = 500u32.min(self.economy.wallet.cash);
+        self.economy.wallet.spend(penalty, false);
+        // Clear evidence.
+        self.evidence.clear();
+        tracing::info!("Player respawned at safehouse. HP restored, heat cleared, -${} penalty.", penalty);
+        self.news.publish(
+            crate::news::NewsKind::Rumor,
+            "Suspect spotted alive",
+            "Rumors say the suspect survived and was seen in East Blocks.",
+            0.0,
+        );
+    }
+
     fn apply_heist_outcome(&mut self, outcome: HeistOutcome) {
         if outcome.success {
             self.economy.wallet.add(outcome.reward_cash, false);
@@ -1386,8 +1426,9 @@ impl Plugin for WorldPlugin {
                 self.player_health.take_damage(player_hit_damage);
                 self.combat.spawn_blood(player_pos, player_hit_dir, 5);
                 tracing::info!("Player hit! HP: {:.0}/{:.0}", self.player_health.current, self.player_health.max);
-                if self.player_health.is_dead() {
-                    tracing::info!("Player killed by police! Game over.");
+                if self.player_health.is_dead() && self.respawn_timer <= 0.0 {
+                    self.respawn_timer = 3.0; // 3 sek respawn timer.
+                    tracing::info!("Player killed! Respawning at safehouse in 3s...");
                     self.news.publish(
                         crate::news::NewsKind::PoliceBlotter,
                         "Suspect neutralized",
@@ -1396,6 +1437,19 @@ impl Plugin for WorldPlugin {
                     );
                 }
             }
+        }
+
+        // Respawn logic: tæl ned, respawn ved død.
+        if self.respawn_timer > 0.0 {
+            self.respawn_timer -= ctx.dt;
+            if self.respawn_timer <= 0.0 {
+                self.respawn_player(ctx.world);
+            }
+        }
+
+        // Health regen: langsom helbredelse når heat er lav og spilleren er i live.
+        if self.player_health.alive && self.player_health.current < self.player_health.max && self.wanted.heat_points < 5.0 {
+            self.player_health.heal(ctx.dt * 2.0); // 2 HP/s ved lav heat.
         }
 
         // Fase 10: AI Director, events, news, rivals.
@@ -1696,16 +1750,21 @@ impl Plugin for WorldPlugin {
                 Color::rgba(0.5, 1.0, 0.5, 1.0)
             };
             tr.add_text(&mut sprites, Vec2::new(hud_x, hud_y + line_h), &heat_text, scale, heat_color, heat_core::render::LAYER_UI);
-            // Linje 3: Health.
-            let health_text = format!("HP: {:.0}/{:.0}", self.player_health.current, self.player_health.max);
-            let health_color = if self.player_health.health_pct() > 0.6 {
-                Color::rgba(0.3, 1.0, 0.3, 1.0)
-            } else if self.player_health.health_pct() > 0.3 {
-                Color::rgba(1.0, 0.8, 0.2, 1.0)
+            // Linje 3: Health (eller respawn timer ved død).
+            if self.respawn_timer > 0.0 {
+                let death_text = format!("RESPAWN: {:.0}", self.respawn_timer);
+                tr.add_text(&mut sprites, Vec2::new(hud_x, hud_y + line_h * 2.0), &death_text, scale, Color::rgba(1.0, 0.2, 0.2, 1.0), heat_core::render::LAYER_UI);
             } else {
-                Color::rgba(1.0, 0.2, 0.2, 1.0)
-            };
-            tr.add_text(&mut sprites, Vec2::new(hud_x, hud_y + line_h * 2.0), &health_text, scale, health_color, heat_core::render::LAYER_UI);
+                let health_text = format!("HP: {:.0}/{:.0}", self.player_health.current, self.player_health.max);
+                let health_color = if self.player_health.health_pct() > 0.6 {
+                    Color::rgba(0.3, 1.0, 0.3, 1.0)
+                } else if self.player_health.health_pct() > 0.3 {
+                    Color::rgba(1.0, 0.8, 0.2, 1.0)
+                } else {
+                    Color::rgba(1.0, 0.2, 0.2, 1.0)
+                };
+                tr.add_text(&mut sprites, Vec2::new(hud_x, hud_y + line_h * 2.0), &health_text, scale, health_color, heat_core::render::LAYER_UI);
+            }
             // Linje 4: Mission objective.
             if let Some(ref obj) = self.ui.hud.current_objective {
                 let obj_text = format!("OBJ: {}", &obj[..obj.len().min(40)]);
