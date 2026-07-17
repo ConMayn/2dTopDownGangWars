@@ -1,6 +1,6 @@
 #![allow(dead_code)] // `zone` og `Player::speed` er public/stub felter.
 
-//! World — binder tilemap, zone, NPC sammen.
+//! World — binder tilemap, zone, NPC, missioner, dialog og økonomi sammen.
 //!
 //! WorldPlugin er en engine Plugin der ejer den nuværende zone,
 //! renderer tilemap, opdaterer NPC'ere og lader spilleren bevæge sig
@@ -28,6 +28,9 @@ use crate::factions::{FactionAi, FactionRegistry, InfluenceGraph, ReputationStat
 use crate::police::{CrimeType, EvidenceKind, EvidenceLedger, Police, PoliceState, WantedState, despawn_excess_police, spawn_police_units, update_police, update_wanted_sight};
 use crate::systems::spatial::SpatialGrid;
 use crate::systems::world_time::WorldTime;
+use crate::economy::{PlayerEconomy};
+use crate::missions::{MissionTracker, default_missions, Objective};
+use crate::dialog::{ActiveDialog, demo_tree};
 use tilemap::{Tilemap, TilemapDef};
 use tiles::{TileDef, TileRegistry, TileType};
 use vehicle::{Vehicle, VehicleRegistry, collide_vehicle_with_tilemap, update_vehicle_physics};
@@ -79,6 +82,12 @@ pub struct WorldPlugin {
     police_count_target: u32,
     /// Crime timer: for at detektere reckless driving som crime.
     crime_check_timer: f32,
+    // Fase 7: economy + missions + dialog
+    economy: PlayerEconomy,
+    mission_tracker: MissionTracker,
+    active_dialog: Option<ActiveDialog>,
+    /// Cooldown så dialog/mission trigger ikke spammes.
+    dialog_cooldown: f32,
 }
 
 impl WorldPlugin {
@@ -105,6 +114,10 @@ impl WorldPlugin {
             evidence: EvidenceLedger::new(),
             police_count_target: 0,
             crime_check_timer: 0.0,
+            economy: PlayerEconomy::with_starter_kit(),
+            mission_tracker: MissionTracker::new(),
+            active_dialog: None,
+            dialog_cooldown: 0.0,
         }
     }
 
@@ -485,6 +498,179 @@ impl WorldPlugin {
             self.faction_ai.handle_event(&mut self.reputation, event);
         }
     }
+
+    /// Fase 7: Opdatér aktive missioner — auto-advance baseret på stubs.
+    fn update_missions(&mut self, world: &heat_core::World, _player_pos: Vec2) {
+        let active_indices: Vec<usize> = self.mission_tracker.active();
+        for idx in active_indices {
+            let mission = &mut self.mission_tracker.missions[idx];
+            if let Some(obj) = mission.current_objective().cloned() {
+                let advance = match obj {
+                    Objective::GoToZone { ref zone } if zone == CURRENT_ZONE => {
+                        // Simpel stub: spilleren er i den korrekte zone.
+                        true
+                    }
+                    Objective::StealVehicle { ref def_id } => {
+                        // Tjek om spilleren kører et køretøj af den type.
+                        if let Some(pe) = self.player_entity {
+                            if let Ok(player) = world.inner().get::<&Player>(pe) {
+                                if let Some(ve) = player.in_vehicle {
+                                    if let Ok(vehicle) = world.inner().get::<&Vehicle>(ve) {
+                                        &vehicle.def_id == def_id
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    }
+                    Objective::EscapePolice { heat_max } => {
+                        self.wanted.level.as_u8() <= heat_max
+                    }
+                    _ => false,
+                };
+                if advance {
+                    mission.advance();
+                    if mission.is_complete() {
+                        tracing::info!("Mission completed: {}", mission.def.title);
+                        let rewards = mission.def.rewards.clone();
+                        self.apply_rewards(&rewards);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Anvend mission rewards.
+    fn apply_rewards(&mut self, rewards: &[crate::missions::Reward]) {
+        use crate::missions::Reward;
+        use crate::factions::apply_event;
+        use crate::factions::RepEvent;
+        for reward in rewards {
+            match reward {
+                Reward::Cash { amount, clean } => {
+                    self.economy.wallet.add(*amount, *clean);
+                    tracing::info!("Reward: ${} {}", amount, if *clean { "clean" } else { "cash" });
+                }
+                Reward::Item { item_id, count } => {
+                    let mut item = crate::economy::Item::new(
+                        item_id,
+                        crate::economy::ItemKind::Gift,
+                        item_id,
+                        0,
+                        false,
+                    );
+                    item.stack = *count;
+                    self.economy.inventory.add(item);
+                    tracing::info!("Reward item: {} x{}", item_id, count);
+                }
+                Reward::FactionTrust { faction, delta } => {
+                    apply_event(
+                        &mut self.reputation,
+                        &RepEvent::WonFight { reputation_gain: *delta },
+                    );
+                    let _ = faction;
+                }
+                Reward::StreetRep { delta } => {
+                    apply_event(
+                        &mut self.reputation,
+                        &RepEvent::WonFight { reputation_gain: *delta },
+                    );
+                }
+                Reward::Influence { zone, faction, delta } => {
+                    if let Some(inf) = self.influence_graph.get_mut(zone) {
+                        inf.add_influence(faction, *delta);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Fase 7: Start dialog når spilleren trykker E (hvis ikke i bil/køretøj).
+    fn handle_dialog_interact(&mut self) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        let tree = demo_tree();
+        self.active_dialog = ActiveDialog::new(tree, "greet");
+        self.dialog_cooldown = 0.3;
+        tracing::info!("Dialog started with Lil' P");
+    }
+
+    /// Avancér dialogen ét skridt: vælg første valg og anvend effekter.
+    fn advance_dialog(&mut self) {
+        if self.active_dialog.is_none() {
+            return;
+        }
+        let effects: Vec<crate::dialog::DialogEffect> = {
+            let dialog = self.active_dialog.as_mut().unwrap();
+            let node = dialog.current_node();
+            if node.choices.is_empty() {
+                self.active_dialog = None;
+                tracing::info!("Dialog ended");
+                return;
+            }
+            // Stub: vælg altid første valg; clone effects så vi kan mutere self efterfølgende.
+            if let Some(choice) = dialog.choose(0) {
+                let has_next = choice.next.is_some();
+                let effects = choice.effects.clone();
+                if !has_next {
+                    self.active_dialog = None;
+                    tracing::info!("Dialog ended");
+                }
+                effects
+            } else {
+                return;
+            }
+        };
+        for effect in &effects {
+            self.apply_dialog_effect(effect);
+        }
+    }
+
+    fn apply_dialog_effect(&mut self,
+        effect: &crate::dialog::DialogEffect,
+    ) {
+        use crate::dialog::DialogEffect;
+        use crate::economy::{Item, ItemKind};
+        match effect {
+            DialogEffect::StartMission { mission_id } => {
+                if let Some(def) = default_missions().into_iter().find(|d| d.id == *mission_id) {
+                    self.mission_tracker.start(def);
+                    tracing::info!("Started mission via dialog: {}", mission_id);
+                }
+            }
+            DialogEffect::AdvanceMission { mission_id, objective_idx } => {
+                if let Some(m) = self.mission_tracker.get_active_mut(mission_id) {
+                    m.current_objective = *objective_idx;
+                }
+            }
+            DialogEffect::GiveItem { item_id, count } => {
+                let item = Item::new(item_id, ItemKind::Gift, item_id, 0, false);
+                let mut item = item;
+                item.stack = *count;
+                self.economy.inventory.add(item);
+            }
+            DialogEffect::TakeItem { item_id, count } => {
+                self.economy.inventory.remove(item_id, *count);
+            }
+            DialogEffect::GiveCash { amount, clean } => {
+                self.economy.wallet.add(*amount, *clean);
+            }
+            DialogEffect::TakeCash { amount, clean } => {
+                self.economy.wallet.spend(*amount, *clean);
+            }
+            DialogEffect::ReputationEvent { event_kind } => {
+                let _ = event_kind;
+            }
+        }
+    }
 }
 
 impl Plugin for WorldPlugin {
@@ -553,11 +739,17 @@ impl Plugin for WorldPlugin {
         spawn_police_units(ctx.world, 2, CURRENT_ZONE, Vec2::new(px_w * 0.5, px_h * 0.5));
         self.police_count_target = 2;
 
+        // Fase 7: load default mission definitions.
+        for def in default_missions() {
+            self.mission_tracker.start(def);
+        }
+
         tracing::info!(
-            "WorldPlugin init: tilemap {}x{}, {} factions, influence graph init, player + NPCs + vehicles",
+            "WorldPlugin init: tilemap {}x{}, {} factions, {} missions, economy starter $$$, influence graph init, player + NPCs + vehicles",
             px_w as i32,
             px_h as i32,
             self.faction_registry.len(),
+            self.mission_tracker.missions.len(),
         );
     }
 
@@ -714,6 +906,31 @@ impl Plugin for WorldPlugin {
                     }
                 }
             }
+        }
+
+        // Fase 7: Mission-update (auto-advance GoToZone / StealVehicle stubs).
+        self.update_missions(ctx.world, player_pos);
+
+        // Fase 7: Dialog input (E toggler/interagerer med dialog).
+        self.dialog_cooldown = (self.dialog_cooldown - ctx.dt).max(0.0);
+        if self.dialog_cooldown == 0.0 && ctx.input.action_pressed(Action::Interact) {
+            if self.active_dialog.is_some() {
+                self.advance_dialog();
+                self.dialog_cooldown = 0.3;
+            } else {
+                self.handle_dialog_interact();
+                self.dialog_cooldown = 0.3;
+            }
+        }
+        // Debug: vis økonomi og aktive missioner.
+        if ctx.input.action_pressed(Action::ToggleDebug) {
+            tracing::info!(
+                "Wallet: ${}/${} | Missions active: {} | Dialog: {}",
+                self.economy.wallet.cash,
+                self.economy.wallet.clean,
+                self.mission_tracker.active().len(),
+                self.active_dialog.is_some(),
+            );
         }
 
         // Opdatér prev_player_pos.
