@@ -100,6 +100,7 @@ pub const LAYER_DECALS: i32 = 10;
 pub const LAYER_ENTITIES: i32 = 20;
 pub const LAYER_OVERHEAD: i32 = 30;
 pub const LAYER_EFFECTS: i32 = 40;
+pub const LAYER_NIGHT_OVERLAY: i32 = 45;
 pub const LAYER_UI: i32 = 50;
 
 /// Vertex for sprite rendering.

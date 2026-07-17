@@ -120,6 +120,10 @@ pub struct WorldPlugin {
     audio: AudioSystem,
     // Fase 12: font + text rendering
     font_texture: Option<TextureHandle>,
+    /// 1x1 hvid texture til overlays (day/night, farvede quads).
+    white_texture: Option<TextureHandle>,
+    /// Render-tid (akumulerer dt i render for animation).
+    render_time: f32,
 }
 
 impl WorldPlugin {
@@ -164,6 +168,8 @@ impl WorldPlugin {
             ui: UiState::new(),
             audio: AudioSystem::new(),
             font_texture: None,
+            white_texture: None,
+            render_time: 0.0,
         }
     }
 
@@ -228,6 +234,12 @@ impl WorldPlugin {
         let font_img = crate::font::generate_font_atlas();
         let _ = image::save_buffer(&font_path, &font_img, crate::font::ATLAS_W, crate::font::ATLAS_H, image::ExtendedColorType::Rgba8);
         let _ = assets.load_texture(&font_path)?;
+
+        // White pixel texture (til overlays, day/night, farvede quads).
+        let white_path = std::env::temp_dir().join("heat_city_white.png");
+        let white_img = image::ImageBuffer::from_pixel(1, 1, image::Rgba([255, 255, 255, 255]));
+        let _ = image::save_buffer(&white_path, &white_img, 1, 1, image::ExtendedColorType::Rgba8);
+        let _ = assets.load_texture(&white_path)?;
         Ok(())
     }
 
@@ -914,6 +926,10 @@ impl Plugin for WorldPlugin {
             .assets
             .get_texture_by_path(&std::env::temp_dir().join("heat_city_font.png"))
             .copied();
+        self.white_texture = ctx
+            .assets
+            .get_texture_by_path(&std::env::temp_dir().join("heat_city_white.png"))
+            .copied();
 
         // Load vehicle textures.
         self.vehicle_textures.clear();
@@ -1258,6 +1274,8 @@ impl Plugin for WorldPlugin {
     }
 
     fn render(&mut self, ctx: &mut RenderContext) {
+        self.render_time += 0.016; // ~60fps; præcis værdi er ikke kritisk for animation.
+        let anim_time = self.render_time;
         let Some(tilemap) = &self.tilemap else { return };
 
         // Render tilemap (med procedurale textures).
@@ -1298,7 +1316,7 @@ impl Plugin for WorldPlugin {
             }
         }
 
-        // Render NPC's — detaljeret karakter-sprite, farve baseret på state.
+        // Render NPC's — detaljeret karakter-sprite, farve baseret på state + walk bob.
         let inner = ctx.world.inner();
         for (_, (npc,)) in &mut inner.query::<(&Npc,)>() {
             if let Some(tex) = self.npc_texture {
@@ -1308,9 +1326,16 @@ impl Plugin for WorldPlugin {
                     npc_fsm::NpcState::Talk => Color::rgba(0.4, 0.9, 1.0, 1.0),
                     _ => Color::rgba(npc.color[0], npc.color[1], npc.color[2], npc.color[3]),
                 };
+                // Walk bob: NPC'er der bevæger sig "hopper" let op/ned.
+                let moving = npc.state == npc_fsm::NpcState::Walk || npc.state == npc_fsm::NpcState::Flee;
+                let bob = if moving {
+                    (anim_time * 8.0).sin() * 1.5
+                } else {
+                    0.0
+                };
                 ctx.batch.add(Sprite {
                     texture: tex,
-                    position: npc.pos,
+                    position: Vec2::new(npc.pos.x, npc.pos.y + bob),
                     size: Vec2::new(24.0, 24.0),
                     rotation: 0.0,
                     color,
@@ -1320,7 +1345,7 @@ impl Plugin for WorldPlugin {
             }
         }
 
-        // Render politi — detaljeret karakter med badge, farve baseret på state.
+        // Render politi — detaljeret karakter med badge, farve baseret på state + walk bob.
         let inner = ctx.world.inner();
         for (_, (police,)) in &mut inner.query::<(&Police,)>() {
             if let Some(tex) = self.police_texture {
@@ -1329,9 +1354,17 @@ impl Plugin for WorldPlugin {
                     PoliceState::Search => Color::rgba(1.0, 0.7, 0.2, 1.0),
                     _ => Color::WHITE,
                 };
+                // Walk bob: politi der er i Pursue/Search hopper mere.
+                let moving = police.state == PoliceState::Pursue || police.state == PoliceState::Search || police.state == PoliceState::Patrol;
+                let speed_mult = if police.state == PoliceState::Pursue { 12.0 } else { 8.0 };
+                let bob = if moving {
+                    (anim_time * speed_mult).sin() * 2.0
+                } else {
+                    0.0
+                };
                 ctx.batch.add(Sprite {
                     texture: tex,
-                    position: police.pos,
+                    position: Vec2::new(police.pos.x, police.pos.y + bob),
                     size: Vec2::new(32.0, 32.0),
                     rotation: police.heading,
                     color,
@@ -1341,7 +1374,7 @@ impl Plugin for WorldPlugin {
             }
         }
 
-        // Render player — detaljeret karakter med våben.
+        // Render player — detaljeret karakter med våben + walk bob.
         if let (Some(tex), Some(entity)) = (self.player_texture, self.player_entity) {
             let in_vehicle = ctx
                 .world
@@ -1360,9 +1393,16 @@ impl Plugin for WorldPlugin {
                     } else {
                         Color::WHITE
                     };
+                    // Walk bob: hvis spilleren bevæger sig, hop karakteren let.
+                    let moving = (player_ref.pos - self.prev_player_pos).length() > 0.1;
+                    let bob = if moving {
+                        (anim_time * 10.0).sin() * 2.0
+                    } else {
+                        0.0
+                    };
                     ctx.batch.add(Sprite {
                         texture: tex,
-                        position: player_ref.pos,
+                        position: Vec2::new(player_ref.pos.x, player_ref.pos.y + bob),
                         size: Vec2::new(32.0, 32.0),
                         rotation: 0.0,
                         color: heat_glow,
@@ -1370,6 +1410,32 @@ impl Plugin for WorldPlugin {
                         uv_rect: None,
                     });
                 }
+            }
+        }
+
+        // Day/night overlay: mørk quad over hele kamera-view (alpha baseret på darkness).
+        let darkness = self.world_time.time_of_day().darkness();
+        if darkness > 0.01 {
+            if let Some(white_tex) = self.white_texture {
+                let cam = ctx.camera;
+                let overlay_w = cam.viewport_w / cam.zoom;
+                let overlay_h = cam.viewport_h / cam.zoom;
+                // Nat: mørkeblå tint. Dawn/Evening: varm orange tint.
+                let overlay_color = match self.world_time.time_of_day() {
+                    crate::systems::world_time::TimeOfDay::Dawn => Color::rgba(0.3, 0.2, 0.4, darkness * 0.4),
+                    crate::systems::world_time::TimeOfDay::Evening => Color::rgba(0.4, 0.2, 0.1, darkness * 0.3),
+                    crate::systems::world_time::TimeOfDay::Night => Color::rgba(0.02, 0.03, 0.12, darkness * 0.7),
+                    _ => Color::rgba(0.0, 0.0, 0.05, darkness * 0.3),
+                };
+                ctx.batch.add(Sprite {
+                    texture: white_tex,
+                    position: Vec2::new(cam.position.x, cam.position.y),
+                    size: Vec2::new(overlay_w, overlay_h),
+                    rotation: 0.0,
+                    color: overlay_color,
+                    layer: heat_core::render::LAYER_NIGHT_OVERLAY,
+                    uv_rect: None,
+                });
             }
         }
 
