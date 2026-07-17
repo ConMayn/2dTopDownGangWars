@@ -39,14 +39,22 @@ impl Camera {
         if let Some(b) = self.bounds {
             let half_w = self.viewport_w * 0.5 / self.zoom;
             let half_h = self.viewport_h * 0.5 / self.zoom;
-            self.position.x = self.position.x.clamp(b.x as f32 + half_w, (b.x + b.w) as f32 - half_w);
-            self.position.y = self.position.y.clamp(b.y as f32 + half_h, (b.y + b.h) as f32 - half_h);
-            // Hvis zonen er mindre end viewport, centrér den.
-            if (b.w as f32) < self.viewport_w / self.zoom {
+            // Hvis zonen er mindre end viewport, centrér den (undgå min > max i clamp).
+            if (b.w as f32) <= self.viewport_w / self.zoom {
                 self.position.x = (b.x + b.w / 2) as f32;
+            } else {
+                self.position.x = self.position.x.clamp(
+                    (b.x as f32) + half_w,
+                    (b.x + b.w) as f32 - half_w,
+                );
             }
-            if (b.h as f32) < self.viewport_h / self.zoom {
+            if (b.h as f32) <= self.viewport_h / self.zoom {
                 self.position.y = (b.y + b.h / 2) as f32;
+            } else {
+                self.position.y = self.position.y.clamp(
+                    (b.y as f32) + half_h,
+                    (b.y + b.h) as f32 - half_h,
+                );
             }
         }
     }
@@ -276,17 +284,23 @@ impl SpriteBatch {
             .queue
             .write_buffer(&renderer.index_buf, 0, bytemuck::cast_slice(&self.indices));
 
-        renderer.render_sprites(
-            camera,
-            &self.vertices,
-            &self.indices,
-            index_count,
-            assets,
-            self.sprites
-                .first()
-                .map(|s| s.texture)
-                .unwrap_or(TextureHandle::null()),
-        )?;
+        // Find første sprite med en gyldig texture; hvis ingen, tegn bare clear.
+        let first_valid_texture = self
+            .sprites
+            .iter()
+            .find_map(|s| assets.get_texture(s.texture).map(|_| s.texture));
+        if let Some(tex) = first_valid_texture {
+            renderer.render_sprites(
+                camera,
+                &self.vertices,
+                &self.indices,
+                index_count,
+                assets,
+                tex,
+            )?;
+        } else {
+            renderer.clear_only(camera)?;
+        }
         Ok(())
     }
 }

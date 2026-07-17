@@ -3,6 +3,7 @@
 //! Fase 4: WorldPlugin med NPC FSM, dag/nat-cyklus, dialog, spatial grid.
 
 mod factions;
+mod police;
 mod systems;
 mod world;
 
@@ -17,7 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    tracing::info!("Heat City Fase 4 — starter");
+    tracing::info!("Heat City Fase 6 — starter");
 
     let app = AppBuilder::new()
         .plugin(WorldPlugin::new())

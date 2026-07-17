@@ -23,8 +23,9 @@ use hecs::Entity;
 use collision::move_and_collide;
 use npc::{Npc, NpcType, Patrol, update_npc_dialog, update_npcs};
 use crate::factions::{FactionAi, FactionRegistry, InfluenceGraph, ReputationState, RepEvent};
+use crate::police::{CrimeType, EvidenceKind, EvidenceLedger, Police, PoliceState, WantedState, despawn_excess_police, spawn_police_units, update_police, update_wanted_sight};
 use crate::systems::spatial::SpatialGrid;
-use crate::systems::world_time::{TimeOfDay, WorldTime};
+use crate::systems::world_time::WorldTime;
 use tilemap::{Tilemap, TilemapDef};
 use tiles::{TileDef, TileRegistry, TileType};
 use vehicle::{Vehicle, VehicleRegistry, collide_vehicle_with_tilemap, update_vehicle_physics};
@@ -47,7 +48,7 @@ pub struct Player {
     pub armed: bool,
 }
 
-/// Hoved-plugin for Fase 2-5: byen + spiller + NPC + vehicles + tid + factions.
+/// Hoved-plugin for Fase 2-6: byen + spiller + NPC + vehicles + tid + factions + politi.
 pub struct WorldPlugin {
     tile_registry: TileRegistry,
     tilemap: Option<Tilemap>,
@@ -56,6 +57,7 @@ pub struct WorldPlugin {
     player_entity: Option<EntityId>,
     player_texture: Option<TextureHandle>,
     npc_texture: Option<TextureHandle>,
+    police_texture: Option<TextureHandle>,
     vehicle_textures: Vec<TextureHandle>,
     world_time: WorldTime,
     spatial: SpatialGrid,
@@ -68,6 +70,13 @@ pub struct WorldPlugin {
     rep_event_timer: f32,
     /// Tidligere spiller-position (til at detektere hastighed/reckless driving).
     prev_player_pos: Vec2,
+    // Fase 6: politi
+    wanted: WantedState,
+    evidence: EvidenceLedger,
+    /// Antal politi-enheder der pt er spawned.
+    police_count_target: u32,
+    /// Crime timer: for at detektere reckless driving som crime.
+    crime_check_timer: f32,
 }
 
 impl WorldPlugin {
@@ -80,6 +89,7 @@ impl WorldPlugin {
             player_entity: None,
             player_texture: None,
             npc_texture: None,
+            police_texture: None,
             vehicle_textures: Vec::new(),
             world_time: WorldTime::new(),
             spatial: SpatialGrid::new(64.0),
@@ -89,10 +99,14 @@ impl WorldPlugin {
             faction_ai: FactionAi::new(),
             rep_event_timer: 0.0,
             prev_player_pos: Vec2::ZERO,
+            wanted: WantedState::new(),
+            evidence: EvidenceLedger::new(),
+            police_count_target: 0,
+            crime_check_timer: 0.0,
         }
     }
 
-    /// Opret test-assets (PNG filer) for Fase 2/3.
+    /// Opret test-assets (PNG filer) for Fase 2-6.
     fn create_test_assets(&self, assets: &mut heat_core::AssetStore) -> Result<(), AppError> {
         // Player texture: 32x32 blå
         let player_path = std::env::temp_dir().join("heat_city_player.png");
@@ -109,6 +123,14 @@ impl WorldPlugin {
             *p = image::Rgba([100, 180, 100, 255]);
         }
         let _ = image::save_buffer(&npc_path, &img2, 24, 24, image::ExtendedColorType::Rgba8);
+
+        // Police texture: 24x32 mørkeblå
+        let police_path = std::env::temp_dir().join("heat_city_police.png");
+        let mut pimg = image::ImageBuffer::new(24, 32);
+        for p in pimg.pixels_mut() {
+            *p = image::Rgba([30, 50, 120, 255]);
+        }
+        let _ = image::save_buffer(&police_path, &pimg, 24, 32, image::ExtendedColorType::Rgba8);
 
         // Vehicle textures: en per bil-type, farvet efter VehicleDef.color.
         let mut i = 0;
@@ -128,9 +150,10 @@ impl WorldPlugin {
             i += 1;
         }
 
-        // Load player og npc textures.
+        // Load player, npc og police textures.
         let _ = assets.load_texture(&player_path)?;
         let _ = assets.load_texture(&npc_path)?;
+        let _ = assets.load_texture(&police_path)?;
         Ok(())
     }
 
@@ -334,6 +357,7 @@ impl WorldPlugin {
         &mut self,
         world: &mut World,
         player_entity: hecs::Entity,
+        sim_time: f32,
     ) {
         // Tjek om spiller allerede er i en bil.
         let in_vehicle = world
@@ -411,12 +435,22 @@ impl WorldPlugin {
                 faction: String::new(), // ukendt ejer for nu
             };
             self.faction_ai.handle_event(&mut self.reputation, &event);
+
+            // Fase 6: Car theft → heat.
+            let theft_pos = world
+                .inner()
+                .get::<&Player>(player_entity)
+                .ok()
+                .map(|p| p.pos)
+                .unwrap_or(Vec2::ZERO);
+            self.wanted.add_heat(CrimeType::CarTheft.heat_points(), sim_time, theft_pos);
+            tracing::info!("Crime: {} (+{:.0} heat)", CrimeType::CarTheft.label(), CrimeType::CarTheft.heat_points());
         }
     }
 
     /// Generér reputation-events baseret på spillerens adfærd.
     /// Kaldes periodisk (~hver 2. sim-sek).
-    fn generate_rep_events(&mut self, player_pos: Vec2, player_armed: bool) {
+    fn generate_rep_events(&mut self, player_pos: Vec2, player_armed: bool, sim_time: f32) {
         let mut events: Vec<RepEvent> = Vec::new();
 
         // 1. Spiller med våben i nærheden af NPC'er → SeenArmed.
@@ -437,6 +471,13 @@ impl WorldPlugin {
             });
         }
 
+        // Fase 6: Crimes → heat.
+        if player_speed > 300.0 {
+            self.wanted.add_heat(CrimeType::RecklessDriving.heat_points(), sim_time, player_pos);
+        } else if player_speed > 200.0 {
+            self.wanted.add_heat(CrimeType::Speeding.heat_points(), sim_time, player_pos);
+        }
+
         // Apply events.
         for event in &events {
             self.faction_ai.handle_event(&mut self.reputation, event);
@@ -455,6 +496,10 @@ impl Plugin for WorldPlugin {
         self.npc_texture = ctx
             .assets
             .get_texture_by_path(&std::env::temp_dir().join("heat_city_npc.png"))
+            .copied();
+        self.police_texture = ctx
+            .assets
+            .get_texture_by_path(&std::env::temp_dir().join("heat_city_police.png"))
             .copied();
 
         // Load vehicle textures.
@@ -502,6 +547,10 @@ impl Plugin for WorldPlugin {
         // Southline Kings dominerer (60%), civilians 30%, police 10%.
         self.influence_graph.init_zone(CURRENT_ZONE, "southline_kings", 10.0);
 
+        // Fase 6: Spawn initiale politi-patruljer (2 enheder for ambiance).
+        spawn_police_units(ctx.world, 2, CURRENT_ZONE, Vec2::new(px_w * 0.5, px_h * 0.5));
+        self.police_count_target = 2;
+
         tracing::info!(
             "WorldPlugin init: tilemap {}x{}, {} factions, influence graph init, player + NPCs + vehicles",
             px_w as i32,
@@ -528,7 +577,7 @@ impl Plugin for WorldPlugin {
         let interact_pressed = ctx.input.action_pressed(Action::Interact);
         if interact_pressed {
             if let Some(player_entity) = self.player_entity {
-                self.handle_vehicle_enter_exit(ctx.world, player_entity);
+                self.handle_vehicle_enter_exit(ctx.world, player_entity, ctx.sim_time);
             }
         }
 
@@ -622,7 +671,47 @@ impl Plugin for WorldPlugin {
         self.rep_event_timer += ctx.dt;
         if self.rep_event_timer > 2.0 {
             self.rep_event_timer = 0.0;
-            self.generate_rep_events(player_pos, player_armed);
+            self.generate_rep_events(player_pos, player_armed, ctx.sim_time);
+        }
+
+        // Fase 6: Wanted / Politi system.
+        self.wanted.update(ctx.dt, ctx.sim_time, player_pos);
+        update_wanted_sight(ctx.world, &mut self.wanted, player_pos, ctx.sim_time);
+        update_police(ctx.world, &self.wanted, player_pos, ctx.dt);
+
+        // Spawn/despawn politi baseret på heat-level (min 2 for ambiance).
+        let desired_units = self.wanted.level.response_units().max(2);
+        if desired_units != self.police_count_target {
+            if desired_units > self.police_count_target {
+                spawn_police_units(ctx.world, desired_units - self.police_count_target, CURRENT_ZONE, player_pos);
+            } else {
+                despawn_excess_police(ctx.world, desired_units);
+            }
+            tracing::info!("Politi: {} enheder (heat: {})", desired_units, self.wanted.level.label());
+            self.police_count_target = desired_units;
+        }
+
+        // Evidence: når politi ser spilleren, saml beviser periodisk.
+        if self.wanted.in_sight {
+            self.crime_check_timer += ctx.dt;
+            if self.crime_check_timer > 3.0 {
+                self.crime_check_timer = 0.0;
+                self.evidence.add(
+                    EvidenceKind::LastPosition,
+                    ctx.sim_time,
+                    CURRENT_ZONE,
+                    &format!("({:.0},{:.0})", player_pos.x, player_pos.y),
+                );
+                // VehicleType bevis hvis i bil.
+                if let Some(pe) = self.player_entity {
+                    let in_veh = ctx.world.inner().get::<&Player>(pe).ok().map(|p| p.in_vehicle).flatten();
+                    if let Some(ve) = in_veh {
+                        if let Ok(v) = ctx.world.inner().get::<&Vehicle>(ve) {
+                            self.evidence.add(EvidenceKind::VehicleType, ctx.sim_time, CURRENT_ZONE, &v.def_id);
+                        }
+                    }
+                }
+            }
         }
 
         // Opdatér prev_player_pos.
@@ -637,9 +726,9 @@ impl Plugin for WorldPlugin {
 
         // Render vehicles.
         let inner = ctx.world.inner();
-        let mut vehicle_idx = 0usize;
+        let vehicle_idx = 0usize;
         for (_, vehicle) in &mut inner.query::<&Vehicle>() {
-            let tex = self.vehicle_textures.iter().enumerate().find(|(i, _)| {
+            let tex = self.vehicle_textures.iter().enumerate().find(|(_, _)| {
                 // Match vehicle def index. Vi bygger textures i samme rækkefølge som defs().
                 // Da defs() returnerer en iterator, og vi ikke kan matche direkte,
                 // bruger vi en simpel hash-map lookup i en rigtig implementation.
@@ -680,6 +769,26 @@ impl Plugin for WorldPlugin {
                     rotation: 0.0,
                     color,
                     layer: heat_core::render::LAYER_ENTITIES,
+                });
+            }
+        }
+
+        // Render politi (Fase 6).
+        let inner = ctx.world.inner();
+        for (_, (police,)) in &mut inner.query::<(&Police,)>() {
+            if let Some(tex) = self.police_texture {
+                let color = match police.state {
+                    PoliceState::Pursue => Color::rgba(1.0, 0.4, 0.4, 1.0),
+                    PoliceState::Search => Color::rgba(1.0, 0.8, 0.3, 1.0),
+                    _ => Color::WHITE,
+                };
+                ctx.batch.add(Sprite {
+                    texture: tex,
+                    position: police.pos,
+                    size: Vec2::new(24.0, 32.0),
+                    rotation: police.heading,
+                    color,
+                    layer: heat_core::render::LAYER_ENTITIES + 2,
                 });
             }
         }
