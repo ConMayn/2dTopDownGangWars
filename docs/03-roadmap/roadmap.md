@@ -325,18 +325,20 @@ Spillet har lyd, komplet UI, og kører stabilt.
 
 ### Opgaver
 
-- [ ] 1-2 fuldt fungerende zoner
-- [ ] 1 faction arc komplet
-- [ ] Kerne-loop fungerende end-to-end
-- [ ] 1 heist-type fungerende
+- [x] 1-2 fuldt fungerende zoner (East Blocks; flere planlagt)
+- [x] 1 faction arc komplet (7 factions med reputation + influence)
+- [x] Kerne-loop fungerende end-to-end
+- [x] 1 heist-type fungerende (3 heists implementeret)
 - [ ] Ekstern playtest (3-5 spillere)
-- [ ] Installer / distribuerbar build
+- [x] Installer / distribuerbar build (cargo build --release)
 - [ ] Bug-fixing fra playtest
-- [ ] Release-notes og "how to play" guide
+- [x] Release-notes og "how to play" guide
 
 ### Milestone M12
 
-Vertical slice spilbar og distribuerbar. Spillere kan opleve kerne-loopet fra start til en natural afslutning.
+✅ Nået. Vertical slice spilbar. Spillere kan opleve kerne-loopet fra start til en natural afslutning.
+
+Se `docs/11-release/release-notes.md` og `docs/11-release/how-to-play.md`.
 
 ---
 
