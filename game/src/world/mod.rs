@@ -42,6 +42,7 @@ use crate::rivals::{RivalSystem, RivalKind};
 use crate::save::SaveSlots;
 use crate::ui::UiState;
 use crate::audio::{AudioSystem, RadioStation};
+use crate::combat::{CombatSystem, WeaponKind, Health};
 use tilemap::{Tilemap, TilemapDef};
 use tiles::{TileDef, TileRegistry, TileType};
 use vehicle::{Vehicle, VehicleRegistry, collide_vehicle_with_tilemap, update_vehicle_physics};
@@ -124,6 +125,12 @@ pub struct WorldPlugin {
     white_texture: Option<TextureHandle>,
     /// Render-tid (akumulerer dt i render for animation).
     render_time: f32,
+    // Combat
+    combat: CombatSystem,
+    /// Player health.
+    player_health: Health,
+    /// Retning spilleren kigger (baseret på movement).
+    player_facing: Vec2,
 }
 
 impl WorldPlugin {
@@ -170,6 +177,9 @@ impl WorldPlugin {
             font_texture: None,
             white_texture: None,
             render_time: 0.0,
+            combat: CombatSystem::new(),
+            player_health: Health::new(100.0),
+            player_facing: Vec2::new(1.0, 0.0),
         }
     }
 
@@ -1188,7 +1198,7 @@ impl Plugin for WorldPlugin {
             self.crew.tick_all(ctx.dt);
         }
 
-        // Fase 9: Heist tick + trigger (Attack = start første heist proof).
+        // Fase 9: Heist tick + trigger (Attack edge-press = start heist proof).
         if let Some(outcome) = self.heist_manager.tick_active(ctx.dt) {
             self.apply_heist_outcome(outcome);
         }
@@ -1196,6 +1206,7 @@ impl Plugin for WorldPlugin {
         if ctx.input.action_pressed(Action::Attack)
             && self.heist_manager.active.is_none()
             && self.heist_test_timer > 2.0
+            && self.player_health.alive
         {
             let mut plan = HeistPlan::new("armored_van", Approach::Loud);
             plan.escape = EscapeRoute::BackAlleys;
@@ -1208,6 +1219,88 @@ impl Plugin for WorldPlugin {
                 tracing::info!("Heist startet: Armored Van (Loud)");
             }
             self.heist_test_timer = 0.0;
+        }
+
+        // Combat: skydning (Attack held = auto-fire pistol).
+        if ctx.input.action_down(Action::Attack) && self.player_health.alive {
+            // Opdatér facing baseret på movement.
+            let (mx, my) = ctx.input.movement();
+            if mx != 0.0 || my != 0.0 {
+                self.player_facing = Vec2::new(mx, my).normalize();
+            }
+            let weapon = WeaponKind::Pistol;
+            if self.combat.can_player_fire(weapon) {
+                self.combat.player_fire(weapon, player_pos, self.player_facing);
+                // Heat per skud.
+                self.wanted.add_heat(weapon.heat_per_shot(), ctx.sim_time, player_pos);
+                // SFX.
+                self.audio.play_sfx("pistol_shot");
+            }
+        }
+
+        // Combat update: projectiles, muzzle flashes, blood.
+        self.combat.update(ctx.dt);
+
+        // Projectile vs NPC collision.
+        let mut npc_hits: Vec<(hecs::Entity, f32, Vec2)> = Vec::new();
+        {
+            let inner = ctx.world.inner();
+            for (entity, npc) in &mut inner.query::<&Npc>() {
+                for proj in &self.combat.projectiles {
+                    if !proj.from_player {
+                        continue;
+                    }
+                    let dist = (proj.pos - npc.pos).length();
+                    if dist < 16.0 {
+                        npc_hits.push((entity, proj.damage, proj.vel.normalize()));
+                        break;
+                    }
+                }
+            }
+        }
+        // Apply NPC damage.
+        for (entity, damage, hit_dir) in npc_hits {
+            // Få NPC til at flygte.
+            if let Ok(mut npc) = ctx.world.inner_mut().get::<&mut Npc>(entity) {
+                npc.state = npc_fsm::NpcState::Flee;
+                npc.memory.fear = (npc.memory.fear + 0.3).min(1.0);
+                let _ = damage;
+                let _ = entity;
+            }
+            // Spawn blood.
+            if let Ok(npc) = ctx.world.inner().get::<&Npc>(entity) {
+                self.combat.spawn_blood(npc.pos, hit_dir, 5);
+            }
+        }
+
+        // Projectile vs politi collision.
+        let mut police_hits: Vec<(hecs::Entity, f32, Vec2)> = Vec::new();
+        {
+            let inner = ctx.world.inner();
+            for (entity, police) in &mut inner.query::<&Police>() {
+                for proj in &self.combat.projectiles {
+                    if !proj.from_player {
+                        continue;
+                    }
+                    let dist = (proj.pos - police.pos).length();
+                    if dist < 20.0 {
+                        police_hits.push((entity, proj.damage, proj.vel.normalize()));
+                        break;
+                    }
+                }
+            }
+        }
+        for (entity, damage, hit_dir) in police_hits {
+            // Politi bliver aggressiv (Pursue) og heat stiger.
+            self.wanted.add_heat(20.0, ctx.sim_time, player_pos);
+            if let Ok(mut police) = ctx.world.inner_mut().get::<&mut Police>(entity) {
+                police.state = PoliceState::Pursue;
+                let _ = damage;
+            }
+            if let Ok(police) = ctx.world.inner().get::<&Police>(entity) {
+                self.combat.spawn_blood(police.pos, hit_dir, 5);
+            }
+            tracing::info!("Cop shot! Heat +20");
         }
 
         // Fase 10: AI Director, events, news, rivals.
@@ -1413,6 +1506,48 @@ impl Plugin for WorldPlugin {
             }
         }
 
+        // Combat rendering: projectiles, muzzle flashes, blood particles.
+        if let Some(white_tex) = self.white_texture {
+            // Projectiles: små gule prikker.
+            for proj in &self.combat.projectiles {
+                ctx.batch.add(Sprite {
+                    texture: white_tex,
+                    position: proj.pos,
+                    size: Vec2::new(4.0, 4.0),
+                    rotation: 0.0,
+                    color: Color::rgba(1.0, 0.9, 0.2, 1.0),
+                    layer: heat_core::render::LAYER_EFFECTS,
+                    uv_rect: None,
+                });
+            }
+            // Muzzle flashes: lyse orange cirkler (kortvarige).
+            for flash in &self.combat.muzzle_flashes {
+                let intensity = flash.time_left / 0.05; // fade.
+                ctx.batch.add(Sprite {
+                    texture: white_tex,
+                    position: flash.pos,
+                    size: Vec2::new(12.0 * intensity, 12.0 * intensity),
+                    rotation: flash.angle,
+                    color: Color::rgba(1.0, 0.8 * intensity, 0.2 * intensity, intensity),
+                    layer: heat_core::render::LAYER_EFFECTS + 1,
+                    uv_rect: None,
+                });
+            }
+            // Blood particles: mørkerøde prikker.
+            for blood in &self.combat.blood_particles {
+                let alpha = (blood.time_left / 0.5).max(0.0);
+                ctx.batch.add(Sprite {
+                    texture: white_tex,
+                    position: blood.pos,
+                    size: Vec2::new(blood.size, blood.size),
+                    rotation: 0.0,
+                    color: Color::rgba(0.6, 0.1, 0.05, alpha),
+                    layer: heat_core::render::LAYER_DECALS,
+                    uv_rect: None,
+                });
+            }
+        }
+
         // Day/night overlay: mørk quad over hele kamera-view (alpha baseret på darkness).
         let darkness = self.world_time.time_of_day().darkness();
         if darkness > 0.01 {
@@ -1466,15 +1601,25 @@ impl Plugin for WorldPlugin {
                 Color::rgba(0.5, 1.0, 0.5, 1.0)
             };
             tr.add_text(&mut sprites, Vec2::new(hud_x, hud_y + line_h), &heat_text, scale, heat_color, heat_core::render::LAYER_UI);
-            // Linje 3: Mission objective.
+            // Linje 3: Health.
+            let health_text = format!("HP: {:.0}/{:.0}", self.player_health.current, self.player_health.max);
+            let health_color = if self.player_health.health_pct() > 0.6 {
+                Color::rgba(0.3, 1.0, 0.3, 1.0)
+            } else if self.player_health.health_pct() > 0.3 {
+                Color::rgba(1.0, 0.8, 0.2, 1.0)
+            } else {
+                Color::rgba(1.0, 0.2, 0.2, 1.0)
+            };
+            tr.add_text(&mut sprites, Vec2::new(hud_x, hud_y + line_h * 2.0), &health_text, scale, health_color, heat_core::render::LAYER_UI);
+            // Linje 4: Mission objective.
             if let Some(ref obj) = self.ui.hud.current_objective {
                 let obj_text = format!("OBJ: {}", &obj[..obj.len().min(40)]);
-                tr.add_text(&mut sprites, Vec2::new(hud_x, hud_y + line_h * 2.0), &obj_text, scale, Color::rgba(0.8, 0.8, 1.0, 1.0), heat_core::render::LAYER_UI);
+                tr.add_text(&mut sprites, Vec2::new(hud_x, hud_y + line_h * 3.0), &obj_text, scale, Color::rgba(0.8, 0.8, 1.0, 1.0), heat_core::render::LAYER_UI);
             }
-            // Linje 4: News ticker.
+            // Linje 5: News ticker.
             if let Some(ref news) = self.ui.hud.news_ticker {
                 let news_text = format!("NEWS: {}", &news[..news.len().min(50)]);
-                tr.add_text(&mut sprites, Vec2::new(hud_x, hud_y + line_h * 3.0), &news_text, scale, Color::rgba(0.7, 0.7, 0.7, 1.0), heat_core::render::LAYER_UI);
+                tr.add_text(&mut sprites, Vec2::new(hud_x, hud_y + line_h * 4.0), &news_text, scale, Color::rgba(0.7, 0.7, 0.7, 1.0), heat_core::render::LAYER_UI);
             }
             // Tilføj tekst-sprites til batch.
             for sprite in sprites {

@@ -4,6 +4,7 @@
 
 mod audio;
 mod businesses;
+mod combat;
 mod crew;
 mod dialog;
 mod director;
