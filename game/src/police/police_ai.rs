@@ -51,6 +51,12 @@ pub struct Police {
     /// Hvilken zone de hører til.
     pub zone: [u8; 16],
     pub zone_len: u8,
+    /// Health (0-100). Dør ved 0.
+    pub health: f32,
+    /// Er betjent i live?
+    pub alive: bool,
+    /// Cooldown for at skyde (sek).
+    pub fire_cooldown: f32,
 }
 
 impl Police {
@@ -69,6 +75,9 @@ impl Police {
             heading: 0.0,
             zone: zone_bytes,
             zone_len: n as u8,
+            health: 100.0,
+            alive: true,
+            fire_cooldown: 0.0,
         }
     }
 

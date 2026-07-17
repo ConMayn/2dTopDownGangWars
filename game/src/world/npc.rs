@@ -24,6 +24,10 @@ pub struct Npc {
     /// Aktuel dialog-linje (tom = ingen).
     pub dialog_line: [u8; 64],
     pub dialog_len: u8,
+    /// Health (0-100). Dør ved 0.
+    pub health: f32,
+    /// Er NPC i live?
+    pub alive: bool,
 }
 
 impl Npc {
@@ -49,6 +53,8 @@ impl Npc {
             idle_timer: 0.0,
             dialog_line: [0; 64],
             dialog_len: 0,
+            health: 50.0,
+            alive: true,
         }
     }
 

@@ -1246,6 +1246,9 @@ impl Plugin for WorldPlugin {
         {
             let inner = ctx.world.inner();
             for (entity, npc) in &mut inner.query::<&Npc>() {
+                if !npc.alive {
+                    continue;
+                }
                 for proj in &self.combat.projectiles {
                     if !proj.from_player {
                         continue;
@@ -1258,19 +1261,32 @@ impl Plugin for WorldPlugin {
                 }
             }
         }
-        // Apply NPC damage.
+        // Apply NPC damage + død/despawn.
+        let mut dead_npcs: Vec<hecs::Entity> = Vec::new();
         for (entity, damage, hit_dir) in npc_hits {
-            // Få NPC til at flygte.
             if let Ok(mut npc) = ctx.world.inner_mut().get::<&mut Npc>(entity) {
                 npc.state = npc_fsm::NpcState::Flee;
                 npc.memory.fear = (npc.memory.fear + 0.3).min(1.0);
-                let _ = damage;
-                let _ = entity;
+                npc.health = (npc.health - damage).max(0.0);
+                if npc.health <= 0.0 {
+                    npc.alive = false;
+                    dead_npcs.push(entity);
+                }
             }
             // Spawn blood.
             if let Ok(npc) = ctx.world.inner().get::<&Npc>(entity) {
-                self.combat.spawn_blood(npc.pos, hit_dir, 5);
+                self.combat.spawn_blood(npc.pos, hit_dir, 8);
             }
+        }
+        // Despawn døde NPC'er.
+        for entity in dead_npcs {
+            let _ = ctx.world.inner_mut().despawn(entity);
+            tracing::info!("NPC killed and despawned");
+            // Murder → massiv heat.
+            self.wanted.add_heat(30.0, ctx.sim_time, player_pos);
+            // Reputation event.
+            let event = RepEvent::CausedChaos { zone: CURRENT_ZONE.to_string(), severity: 2.0 };
+            self.faction_ai.handle_event(&mut self.reputation, &event);
         }
 
         // Projectile vs politi collision.
@@ -1278,6 +1294,9 @@ impl Plugin for WorldPlugin {
         {
             let inner = ctx.world.inner();
             for (entity, police) in &mut inner.query::<&Police>() {
+                if !police.alive {
+                    continue;
+                }
                 for proj in &self.combat.projectiles {
                     if !proj.from_player {
                         continue;
@@ -1290,17 +1309,93 @@ impl Plugin for WorldPlugin {
                 }
             }
         }
+        let mut dead_cops: Vec<hecs::Entity> = Vec::new();
         for (entity, damage, hit_dir) in police_hits {
             // Politi bliver aggressiv (Pursue) og heat stiger.
             self.wanted.add_heat(20.0, ctx.sim_time, player_pos);
             if let Ok(mut police) = ctx.world.inner_mut().get::<&mut Police>(entity) {
                 police.state = PoliceState::Pursue;
-                let _ = damage;
+                police.health = (police.health - damage).max(0.0);
+                if police.health <= 0.0 {
+                    police.alive = false;
+                    dead_cops.push(entity);
+                }
             }
             if let Ok(police) = ctx.world.inner().get::<&Police>(entity) {
-                self.combat.spawn_blood(police.pos, hit_dir, 5);
+                self.combat.spawn_blood(police.pos, hit_dir, 8);
             }
             tracing::info!("Cop shot! Heat +20");
+        }
+        // Despawn døde betjente.
+        for entity in dead_cops {
+            let _ = ctx.world.inner_mut().despawn(entity);
+            tracing::info!("Cop killed and despawned! HEAT +50");
+            self.wanted.add_heat(50.0, ctx.sim_time, player_pos);
+            self.police_count_target = self.police_count_target.saturating_sub(1);
+            // Nyhed om betjent dræbt.
+            self.news.publish(
+                crate::news::NewsKind::PoliceBlotter,
+                "Officer down in East Blocks",
+                "A police officer was killed. Citywide manhunt expected.",
+                ctx.sim_time,
+            );
+        }
+
+        // Politi skyder tilbage: når i Pursue og kan se spilleren.
+        if self.player_health.alive && self.wanted.heat_points > 5.0 {
+            let mut police_projectiles: Vec<(Vec2, Vec2)> = Vec::new(); // (pos, dir)
+            {
+                let inner = ctx.world.inner_mut();
+                for (_, police) in inner.query_mut::<&mut Police>() {
+                    if !police.alive || police.state != PoliceState::Pursue {
+                        continue;
+                    }
+                    let to_player = player_pos - police.pos;
+                    let dist = to_player.length();
+                    if dist < police.sight_range && dist > 20.0 {
+                        police.fire_cooldown = (police.fire_cooldown - ctx.dt).max(0.0);
+                        if police.fire_cooldown <= 0.0 {
+                            let dir = to_player / dist;
+                            police_projectiles.push((police.pos, dir));
+                            police.fire_cooldown = 1.5; // politi skyder hver 1.5s.
+                        }
+                    }
+                }
+            }
+            // Affyr politi projectiles (from_player = false).
+            for (pos, dir) in police_projectiles {
+                self.combat.fire(WeaponKind::Pistol, pos, dir, false);
+                self.audio.play_sfx("police_shot");
+            }
+
+            // Politi projectile vs player collision.
+            let mut player_hit_damage = 0.0f32;
+            let mut player_hit_dir = Vec2::ZERO;
+            for proj in &self.combat.projectiles {
+                if proj.from_player {
+                    continue;
+                }
+                let dist = (proj.pos - player_pos).length();
+                if dist < 18.0 {
+                    player_hit_damage += proj.damage;
+                    player_hit_dir = proj.vel.normalize();
+                    break;
+                }
+            }
+            if player_hit_damage > 0.0 {
+                self.player_health.take_damage(player_hit_damage);
+                self.combat.spawn_blood(player_pos, player_hit_dir, 5);
+                tracing::info!("Player hit! HP: {:.0}/{:.0}", self.player_health.current, self.player_health.max);
+                if self.player_health.is_dead() {
+                    tracing::info!("Player killed by police! Game over.");
+                    self.news.publish(
+                        crate::news::NewsKind::PoliceBlotter,
+                        "Suspect neutralized",
+                        "Police report the suspect was neutralized in a shootout.",
+                        ctx.sim_time,
+                    );
+                }
+            }
         }
 
         // Fase 10: AI Director, events, news, rivals.
