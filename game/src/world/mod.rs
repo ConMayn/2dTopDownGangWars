@@ -1,6 +1,6 @@
 #![allow(dead_code)] // `zone` og `Player::speed` er public/stub felter.
 
-//! World — binder tilemap, zone, NPC, missioner, dialog og økonomi sammen.
+//! World — binder tilemap, zone, NPC, missioner, dialog, økonomi, safehouses, crew og businesses sammen.
 //!
 //! WorldPlugin er en engine Plugin der ejer den nuværende zone,
 //! renderer tilemap, opdaterer NPC'ere og lader spilleren bevæge sig
@@ -31,6 +31,9 @@ use crate::systems::world_time::WorldTime;
 use crate::economy::{PlayerEconomy};
 use crate::missions::{MissionTracker, default_missions, Objective};
 use crate::dialog::{ActiveDialog, demo_tree};
+use crate::safehouses::{SafehousePortfolio};
+use crate::crew::{Crew};
+use crate::businesses::{BusinessPortfolio};
 use tilemap::{Tilemap, TilemapDef};
 use tiles::{TileDef, TileRegistry, TileType};
 use vehicle::{Vehicle, VehicleRegistry, collide_vehicle_with_tilemap, update_vehicle_physics};
@@ -88,6 +91,12 @@ pub struct WorldPlugin {
     active_dialog: Option<ActiveDialog>,
     /// Cooldown så dialog/mission trigger ikke spammes.
     dialog_cooldown: f32,
+    // Fase 8: safehouses + crew + businesses
+    safehouses: SafehousePortfolio,
+    crew: Crew,
+    businesses: BusinessPortfolio,
+    /// Timer for periodisk business/safehouse opdatering og indkomst.
+    economy_tick_timer: f32,
 }
 
 impl WorldPlugin {
@@ -118,6 +127,10 @@ impl WorldPlugin {
             mission_tracker: MissionTracker::new(),
             active_dialog: None,
             dialog_cooldown: 0.0,
+            safehouses: SafehousePortfolio::with_starter(),
+            crew: Crew::with_starter(),
+            businesses: BusinessPortfolio::with_starter(),
+            economy_tick_timer: 0.0,
         }
     }
 
@@ -745,11 +758,14 @@ impl Plugin for WorldPlugin {
         }
 
         tracing::info!(
-            "WorldPlugin init: tilemap {}x{}, {} factions, {} missions, economy starter $$$, influence graph init, player + NPCs + vehicles",
+            "WorldPlugin init: tilemap {}x{}, {} factions, {} missions, economy starter $$$, {} safehouses, {} crew, {} businesses, influence graph init, player + NPCs + vehicles",
             px_w as i32,
             px_h as i32,
             self.faction_registry.len(),
             self.mission_tracker.missions.len(),
+            self.safehouses.owned.len(),
+            self.crew.members.len(),
+            self.businesses.owned.len(),
         );
     }
 
@@ -911,6 +927,18 @@ impl Plugin for WorldPlugin {
         // Fase 7: Mission-update (auto-advance GoToZone / StealVehicle stubs).
         self.update_missions(ctx.world, player_pos);
 
+        // Fase 8: businesses, safehouses, crew tick.
+        self.economy_tick_timer += ctx.dt;
+        if self.economy_tick_timer >= 1.0 {
+            self.economy_tick_timer = 0.0;
+            let biz_payout = self.businesses.tick_all(ctx.dt);
+            if biz_payout > 0 {
+                self.economy.wallet.add(biz_payout, true);
+            }
+            self.safehouses.tick_all(ctx.dt);
+            self.crew.tick_all(ctx.dt);
+        }
+
         // Fase 7: Dialog input (E toggler/interagerer med dialog).
         self.dialog_cooldown = (self.dialog_cooldown - ctx.dt).max(0.0);
         if self.dialog_cooldown == 0.0 && ctx.input.action_pressed(Action::Interact) {
@@ -922,14 +950,20 @@ impl Plugin for WorldPlugin {
                 self.dialog_cooldown = 0.3;
             }
         }
-        // Debug: vis økonomi og aktive missioner.
+        // Debug: vis økonomi og aktive missioner + Fase 8 stats.
         if ctx.input.action_pressed(Action::ToggleDebug) {
             tracing::info!(
-                "Wallet: ${}/${} | Missions active: {} | Dialog: {}",
+                "Wallet: ${}/${} | Missions: {} active | Dialog: {} | Safehouses: {} | Crew: {} | Businesses: {} (risk avg {:.0})",
                 self.economy.wallet.cash,
                 self.economy.wallet.clean,
                 self.mission_tracker.active().len(),
                 self.active_dialog.is_some(),
+                self.safehouses.owned.len(),
+                self.crew.members.len(),
+                self.businesses.owned.len(),
+                if self.businesses.owned.is_empty() { 0.0 } else {
+                    self.businesses.owned.iter().map(|b| b.risk).sum::<f32>() / self.businesses.owned.len() as f32
+                },
             );
         }
 
