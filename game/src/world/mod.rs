@@ -1,6 +1,6 @@
 #![allow(dead_code)] // `zone` og `Player::speed` er public/stub felter.
 
-//! World — binder tilemap, zone, NPC, missioner, dialog, økonomi, safehouses, crew og businesses sammen.
+//! World — binder tilemap, zone, NPC, missioner, dialog, økonomi, safehouses, crew, businesses og heists sammen.
 //!
 //! WorldPlugin er en engine Plugin der ejer den nuværende zone,
 //! renderer tilemap, opdaterer NPC'ere og lader spilleren bevæge sig
@@ -34,6 +34,7 @@ use crate::dialog::{ActiveDialog, demo_tree};
 use crate::safehouses::{SafehousePortfolio};
 use crate::crew::{Crew};
 use crate::businesses::{BusinessPortfolio};
+use crate::heists::{HeistManager, HeistPlan, HeistOutcome, Approach, EscapeRoute, Diversion, default_heists};
 use tilemap::{Tilemap, TilemapDef};
 use tiles::{TileDef, TileRegistry, TileType};
 use vehicle::{Vehicle, VehicleRegistry, collide_vehicle_with_tilemap, update_vehicle_physics};
@@ -97,6 +98,10 @@ pub struct WorldPlugin {
     businesses: BusinessPortfolio,
     /// Timer for periodisk business/safehouse opdatering og indkomst.
     economy_tick_timer: f32,
+    // Fase 9: heists
+    heist_manager: HeistManager,
+    /// Tast for at starte en heist (proof: auto-start første heist med E+Q).
+    heist_test_timer: f32,
 }
 
 impl WorldPlugin {
@@ -131,6 +136,8 @@ impl WorldPlugin {
             crew: Crew::with_starter(),
             businesses: BusinessPortfolio::with_starter(),
             economy_tick_timer: 0.0,
+            heist_manager: HeistManager::new(),
+            heist_test_timer: 0.0,
         }
     }
 
@@ -647,6 +654,47 @@ impl WorldPlugin {
         }
     }
 
+    /// Fase 9: Anvend heist outcome — rewards, heat, evidence, crew-skader.
+    fn apply_heist_outcome(&mut self, outcome: HeistOutcome) {
+        if outcome.success {
+            self.economy.wallet.add(outcome.reward_cash, false);
+            self.economy.wallet.add(outcome.reward_clean, true);
+            tracing::info!(
+                "Heist success: +${} cash, +${} clean, +{:.0} heat, +{:.0} evidence",
+                outcome.reward_cash,
+                outcome.reward_clean,
+                outcome.heat,
+                outcome.evidence,
+            );
+        } else {
+            tracing::info!(
+                "Heist failed: +{:.0} heat, +{:.0} evidence, {} crew injured",
+                outcome.heat,
+                outcome.evidence,
+                outcome.crew_injured.len(),
+            );
+        }
+        // Heat.
+        if let Some(pe) = self.player_entity {
+            let pos = self.prev_player_pos;
+            self.wanted.add_heat(outcome.heat, 0.0, pos);
+            let _ = pe;
+        }
+        // Crew-skader: justér loyalitet/fear.
+        for cid in &outcome.crew_injured {
+            if let Some(m) = self.crew.get_mut(cid) {
+                m.adjust_loyalty(-10.0);
+                m.adjust_fear(15.0);
+            }
+        }
+        // Faction trust.
+        use crate::factions::{apply_event, RepEvent};
+        apply_event(
+            &mut self.reputation,
+            &RepEvent::WonFight { reputation_gain: outcome.faction_trust_delta },
+        );
+    }
+
     fn apply_dialog_effect(&mut self,
         effect: &crate::dialog::DialogEffect,
     ) {
@@ -757,8 +805,13 @@ impl Plugin for WorldPlugin {
             self.mission_tracker.start(def);
         }
 
+        // Fase 9: load default heist definitions.
+        for def in default_heists() {
+            self.heist_manager.add_available(def);
+        }
+
         tracing::info!(
-            "WorldPlugin init: tilemap {}x{}, {} factions, {} missions, economy starter $$$, {} safehouses, {} crew, {} businesses, influence graph init, player + NPCs + vehicles",
+            "WorldPlugin init: tilemap {}x{}, {} factions, {} missions, economy starter $$$, {} safehouses, {} crew, {} businesses, {} heists, influence graph init, player + NPCs + vehicles",
             px_w as i32,
             px_h as i32,
             self.faction_registry.len(),
@@ -766,6 +819,7 @@ impl Plugin for WorldPlugin {
             self.safehouses.owned.len(),
             self.crew.members.len(),
             self.businesses.owned.len(),
+            self.heist_manager.available.len(),
         );
     }
 
@@ -939,6 +993,28 @@ impl Plugin for WorldPlugin {
             self.crew.tick_all(ctx.dt);
         }
 
+        // Fase 9: Heist tick + trigger (Attack = start første heist proof).
+        if let Some(outcome) = self.heist_manager.tick_active(ctx.dt) {
+            self.apply_heist_outcome(outcome);
+        }
+        self.heist_test_timer += ctx.dt;
+        if ctx.input.action_pressed(Action::Attack)
+            && self.heist_manager.active.is_none()
+            && self.heist_test_timer > 2.0
+        {
+            let mut plan = HeistPlan::new("armored_van", Approach::Loud);
+            plan.escape = EscapeRoute::BackAlleys;
+            plan.diversion = Diversion::FakeCall;
+            // Tag første klar crew-medlem med.
+            if let Some(m) = self.crew.ready().first() {
+                plan.crew_ids.push(m.id.clone());
+            }
+            if self.heist_manager.start("armored_van", plan) {
+                tracing::info!("Heist startet: Armored Van (Loud)");
+            }
+            self.heist_test_timer = 0.0;
+        }
+
         // Fase 7: Dialog input (E toggler/interagerer med dialog).
         self.dialog_cooldown = (self.dialog_cooldown - ctx.dt).max(0.0);
         if self.dialog_cooldown == 0.0 && ctx.input.action_pressed(Action::Interact) {
@@ -953,7 +1029,7 @@ impl Plugin for WorldPlugin {
         // Debug: vis økonomi og aktive missioner + Fase 8 stats.
         if ctx.input.action_pressed(Action::ToggleDebug) {
             tracing::info!(
-                "Wallet: ${}/${} | Missions: {} active | Dialog: {} | Safehouses: {} | Crew: {} | Businesses: {} (risk avg {:.0})",
+                "Wallet: ${}/${} | Missions: {} active | Dialog: {} | Safehouses: {} | Crew: {} | Businesses: {} (risk avg {:.0}) | Heists avail: {} active: {}",
                 self.economy.wallet.cash,
                 self.economy.wallet.clean,
                 self.mission_tracker.active().len(),
@@ -964,6 +1040,8 @@ impl Plugin for WorldPlugin {
                 if self.businesses.owned.is_empty() { 0.0 } else {
                     self.businesses.owned.iter().map(|b| b.risk).sum::<f32>() / self.businesses.owned.len() as f32
                 },
+                self.heist_manager.available.len(),
+                self.heist_manager.active.is_some(),
             );
         }
 
